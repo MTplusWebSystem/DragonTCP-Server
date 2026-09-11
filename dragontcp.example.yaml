@@ -1,0 +1,70 @@
+# ==============================================================================
+# DragonTCP Server - Configuration File Example
+# ==============================================================================
+# Usage:
+#   dragontcp-server --config /etc/dragontcp/dragontcp.yaml
+#
+# Command-line flags always take precedence over values in this file.
+# Any omitted fields will use their default values automatically.
+# Both snake_case (e.g. max_connections) and kebab-case (e.g. max-connections)
+# are supported.
+#
+# Example Systemd Unit (/etc/systemd/system/dragontcp.service):
+# ------------------------------------------------------------------------------
+# [Unit]
+# Description=DragonTCP Server
+# After=network.target
+#
+# [Service]
+# Type=simple
+# User=root
+# ExecStart=/usr/local/bin/dragontcp-server --config /etc/dragontcp/dragontcp.yaml
+# Restart=always
+# RestartSec=3
+# LimitNOFILE=65536
+#
+# [Install]
+# WantedBy=multi-user.target
+# ==============================================================================
+
+# Network & Listening
+host: "0.0.0.0"                    # Listen interface / IP address
+port: 53                           # Primary listen port (standard: 53)
+port_alt: 80                       # Secondary simultaneous listen port (0 to disable)
+
+# Security & Limits
+token: ""                          # Optional shared authorization token
+max_connections: 20000             # Maximum simultaneous client tunnels
+allow_private: false               # Allow tunneling to private/loopback IP targets
+
+# DNS Resolver Cache
+dns_cache_ttl: 30s                 # Server DNS resolution cache TTL
+dns_cache_size: 4096               # Maximum cached DNS entries
+
+# Performance & Tuning
+tcp_buffer: 0                      # TCP read/write buffer bytes (0 = OS autotune)
+chunk_max: 1048576                 # Maximum adaptive chunk payload bytes (32 B to 1 MiB)
+chunk_buffered: 32                 # Download buffer per session in 64 KiB blocks (32 = ~2 MiB)
+chunk_poll_wait: 200ms             # Server long-poll wait interval for chunk data
+chunk_session_timeout: 2m          # Inactive chunk session expiration timeout
+
+# Logging & Diagnostics
+debug: false                       # Log sessions, connections, errors, and stats
+debug_chunks: false                # Log every chunk protocol record (very verbose)
+debug_stats_interval: 5s           # Interval for periodic debug statistics (0 to disable)
+
+# Internal Fake SSH Service
+ssh:
+  enable: true                     # Enable internal tunnel-only SSH server
+  listen: "127.0.0.1:2222"         # Internal SSH bind address
+  internal_host: "dragontcp-ssh.internal"  # Target domain intercepted for SSH
+  host_key: "dragontcp_ssh_host_key"       # SSH host ed25519 private key file
+  users: "dragontcp-users.json"            # Path to fake SSH user database
+
+# Integrated BadVPN-compatible UDPGW
+udpgw:
+  enable: true                     # Enable integrated UDPGW service
+  listen: "127.0.0.1:7400"         # UDPGW bind address (loopback recommended)
+  internal_host: "dragontcp-udpgw.internal" # Target domain intercepted for UDPGW
+  max_clients: 10000               # Maximum concurrent UDPGW clients
+  debug: false                     # Verbose UDPGW diagnostic logs
