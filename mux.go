@@ -131,6 +131,10 @@ func handleMuxRequest(
 				_ = mc.sendResponse(wire.StatusError, req.RequestID, []byte("iperf upload validation failed"))
 				return
 			}
+			if debug != nil && debug.enabled {
+				workers := calculateParallelWorkers(value)
+				debug.logf("CALIBRATION fake_iperf=upload mux=true peer=%s chunk=%d bytes=%d seq=%d pollers=%d outstanding=%d", mc.conn.RemoteAddr(), value, len(req.Payload), req.Seq, workers, workers)
+			}
 			_ = mc.sendResponse(wire.StatusOK, req.RequestID, nil)
 		case wire.ProbeIperfDownload:
 			if value < 1 || value > chunkMax {
@@ -138,6 +142,10 @@ func handleMuxRequest(
 				return
 			}
 			count := wire.ProbeBurstCount(value)
+			if debug != nil && debug.enabled {
+				workers := calculateParallelWorkers(value)
+				debug.logf("CALIBRATION fake_iperf=download mux=true peer=%s chunk=%d records=%d bytes=%d pollers=%d outstanding=%d", mc.conn.RemoteAddr(), value, count, value*count, workers, workers)
+			}
 			data := probePattern(value)
 			for i := 0; i < count; i++ {
 				if err := mc.sendMaskedResponse(wire.StatusData, req.RequestID, data, req.Session, wire.ModeProbe, req.Seq+uint64(i)); err != nil {

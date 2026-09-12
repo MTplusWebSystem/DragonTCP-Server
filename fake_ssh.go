@@ -333,6 +333,21 @@ func (s *sshUserStore) updateSettings(username string, days, maxConnections int)
 	return fmt.Errorf("SSH user %q not found", username)
 }
 
+func (s *sshUserStore) setDisabled(username string, disabled bool) error {
+	username = normalizeSSHUsername(username)
+	records, err := s.snapshot()
+	if err != nil {
+		return err
+	}
+	for i := range records {
+		if records[i].Username == username {
+			records[i].Disabled = disabled
+			return s.writeRecords(records)
+		}
+	}
+	return fmt.Errorf("SSH user %q not found", username)
+}
+
 func generateSSHPassword() (string, error) {
 	buf := make([]byte, 18)
 	if _, err := rand.Read(buf); err != nil {
@@ -411,6 +426,15 @@ type sshDirectTCPIPRequest struct {
 	OriginPort uint32
 }
 
+const sshRelayBufferSize = 64 * 1024
+
+var sshRelayBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, sshRelayBufferSize)
+		return &b
+	},
+}
+
 func handleSSHDirectTCPIP(newChan ssh.NewChannel, allowPrivate bool, cache *dnsCache, tcpBuffer int) {
 	var req sshDirectTCPIPRequest
 	if err := ssh.Unmarshal(newChan.ExtraData(), &req); err != nil || req.Host == "" || req.Port == 0 || req.Port > 65535 {
@@ -449,14 +473,18 @@ func handleSSHDirectTCPIP(newChan ssh.NewChannel, allowPrivate bool, cache *dnsC
 	relayWG.Add(2)
 	go func() {
 		defer relayWG.Done()
-		_, _ = io.Copy(backend, ch)
+		bufPtr := sshRelayBufferPool.Get().(*[]byte)
+		defer sshRelayBufferPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(backend, ch, *bufPtr)
 		if cw, ok := backend.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
 	}()
 	go func() {
 		defer relayWG.Done()
-		_, _ = io.Copy(ch, backend)
+		bufPtr := sshRelayBufferPool.Get().(*[]byte)
+		defer sshRelayBufferPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(ch, backend, *bufPtr)
 		if cw, ok := ch.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
@@ -483,6 +511,8 @@ func handleSSHDummySession(newChan ssh.NewChannel) {
 
 func serveSSHConn(conn net.Conn, cfg *ssh.ServerConfig, runtime *sshRuntime, allowPrivate bool, cache *dnsCache, tcpBuffer int) {
 	defer conn.Close()
+	protocol.TuneTCP(conn)
+	protocol.TuneTCPBuffer(conn, tcpBuffer)
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, cfg)
 	if err != nil {

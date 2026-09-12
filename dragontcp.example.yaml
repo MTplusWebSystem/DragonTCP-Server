@@ -53,6 +53,9 @@ debug: false                       # Log sessions, connections, errors, and stat
 debug_chunks: false                # Log every chunk protocol record (very verbose)
 debug_stats_interval: 5s           # Interval for periodic debug statistics (0 to disable)
 
+# Administration & CLI API
+admin_addr: "127.0.0.1:53080"      # Local HTTP admin endpoint for the TUI CLI (empty to disable)
+
 # Internal Fake SSH Service
 ssh:
   enable: true                     # Enable internal tunnel-only SSH server
@@ -68,3 +71,32 @@ udpgw:
   internal_host: "dragontcp-udpgw.internal" # Target domain intercepted for UDPGW
   max_clients: 10000               # Maximum concurrent UDPGW clients
   debug: false                     # Verbose UDPGW diagnostic logs
+
+  # ── Modo de descarga UDP ────────────────────────────────────────────────────
+  # Escolha como o DragonTCP encaminha os pacotes UDP:
+  #
+  #   native   — Descarga ABI Linux (padrão)
+  #              Usa SO_BINDTODEVICE, SO_BUSY_POLL e buffers de 4 MB para
+  #              descarregar pacotes diretamente na fila do driver da NIC,
+  #              ignorando reavaliação de tabela de rotas. Requer root/CAP_NET_RAW.
+  #
+  #   tun      — Dispositivo TUN nativo (/dev/net/tun)
+  #              Injeta pacotes IPv4+UDP brutos no dispositivo TUN do kernel.
+  #              Útil para integração com WireGuard, OpenVPN ou roteamento customizado.
+  #              Requer /dev/net/tun e privilégios de root.
+  #
+  #   standard — UDPGW padrão (BadVPN-compatível)
+  #              Loop ReadFromUDP/WriteToUDP portável. Funciona em qualquer SO.
+  #              Use quando não tiver privilégios de root ou em Windows/macOS.
+  #
+  mode: "native"
+
+  # Placa de rede para SO_BINDTODEVICE (modo native apenas).
+  # "auto" detecta automaticamente a interface padrão de saída.
+  interface: "auto"             # ex: "eth0", "ens3", "bond0"
+
+  # SO_BUSY_POLL em microssegundos (modo native apenas).
+  # Habilita busy polling direto na fila da NIC — latência quase zero.
+  # Exige NIC compatível (Intel i40e, mlx5, etc.) e kernel ≥ 3.11.
+  # Use 0 para desativar.
+  busy_poll_us: 50

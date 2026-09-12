@@ -2,9 +2,11 @@ package xorchunk
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -232,5 +234,108 @@ func TestWithCalibratedChunksLocksIndependentXSizes(t *testing.T) {
 	}
 	if down.Current() != 500000 {
 		t.Fatalf("download calibrated chunk changed to %d", down.Current())
+	}
+}
+
+func TestCalculateParallelWorkers(t *testing.T) {
+	tests := []struct {
+		chunkSize int
+		want      int
+	}{
+		{chunkSize: 16 * 1024, want: 64},
+		{chunkSize: 32 * 1024, want: 32},
+		{chunkSize: 64 * 1024, want: 16},
+		{chunkSize: 128 * 1024, want: 8},
+		{chunkSize: 256 * 1024, want: 4},
+		{chunkSize: 512 * 1024, want: 2},
+		{chunkSize: 1024 * 1024, want: 1},
+		{chunkSize: 0, want: 64},
+		{chunkSize: -50, want: 64},
+		{chunkSize: 8 * 1024, want: 64},        // capped at 64
+		{chunkSize: 2 * 1024 * 1024, want: 1}, // capped at 1
+	}
+
+	for _, tt := range tests {
+		got := CalculateParallelWorkers(tt.chunkSize)
+		if got != tt.want {
+			t.Errorf("CalculateParallelWorkers(%d) = %d, want %d", tt.chunkSize, got, tt.want)
+		}
+	}
+}
+
+func TestProbeCalibrationSustainedParallel(t *testing.T) {
+	addr, closeServer := startCalibrationTestServer(t, 1024*1024)
+	defer closeServer()
+
+	const (
+		chunkSize = 16 * 1024
+		duration  = 100 * time.Millisecond
+	)
+	workers := CalculateParallelWorkers(chunkSize)
+	if workers != 64 {
+		t.Fatalf("expected 64 workers for %d chunk size, got %d", chunkSize, workers)
+	}
+
+	started := time.Now()
+	deadline := started.Add(duration)
+
+	var totalBytes atomic.Int64
+	var totalErrors atomic.Int64
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			c, err := net.Dial("tcp", addr)
+			if err != nil {
+				totalErrors.Add(1)
+				return
+			}
+			defer c.Close()
+
+			reqID := uint32(workerID * 1000)
+
+			for time.Now().Before(deadline) {
+				_ = c.SetDeadline(time.Now().Add(time.Second))
+				// 1. CIPERFUP
+				reqID++
+				pattern := calibrationPattern(chunkSize)
+				payloadUp := append([]byte(fmt.Sprintf("CIPERFUP - %d ", chunkSize)), pattern...)
+				if err := protocol.WriteRequestFrame(c, reqID, payloadUp); err != nil {
+					totalErrors.Add(1)
+					return
+				}
+				id, resp, err := protocol.ReadResponseFrame(c)
+				if err != nil || id != reqID || string(resp) != "IPERFOK" {
+					totalErrors.Add(1)
+					return
+				}
+				totalBytes.Add(int64(chunkSize))
+
+				// 2. CIPERFDW
+				reqID++
+				payloadDw := []byte(fmt.Sprintf("CIPERFDW - %d", chunkSize))
+				if err := protocol.WriteRequestFrame(c, reqID, payloadDw); err != nil {
+					totalErrors.Add(1)
+					return
+				}
+				id, respDw, err := protocol.ReadResponseFrame(c)
+				if err != nil || id != reqID || len(respDw) != chunkSize {
+					totalErrors.Add(1)
+					return
+				}
+				totalBytes.Add(int64(len(respDw)))
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	if totalErrors.Load() > 0 {
+		t.Fatalf("sustained parallel XOR calibration probe encountered %d errors across 64 workers", totalErrors.Load())
+	}
+	if totalBytes.Load() < int64(workers*chunkSize) {
+		t.Fatalf("expected total bytes >= %d, got %d", workers*chunkSize, totalBytes.Load())
 	}
 }

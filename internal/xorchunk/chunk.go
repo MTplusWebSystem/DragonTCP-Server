@@ -85,6 +85,17 @@ func (o Options) WithCoverProfile(profile cover.Profile) Options {
 	return o
 }
 
+// WithPollers overrides the number of parallel workers/lanes.
+func (o Options) WithPollers(pollers int) Options {
+	o.pollers = pollers
+	return o
+}
+
+// Pollers returns the configured number of parallel workers.
+func (o Options) Pollers() int {
+	return o.pollers
+}
+
 // MinSize and MaxSize expose the configured X carrier calibration bounds.
 func (o Options) MinSize() int { return o.minSize }
 func (o Options) MaxSize() int { return o.maxSize }
@@ -720,6 +731,26 @@ func Calibrate(serverAddr, token string, opts Options, fine int) (upload, downlo
 	download = calibrateMaximum(serverAddr, token, opts, true, fine)
 	persistent = probePersistent(serverAddr, token, opts)
 	return
+}
+
+// CalculateParallelWorkers calculates the number of parallel workers required
+// to reach 1024 KB (1 Mbps aggregate throughput). For example, 16 KB yields 64 workers.
+func CalculateParallelWorkers(chunkSize int) int {
+	if chunkSize <= 0 {
+		return 64
+	}
+	const targetBytes = 1024 * 1024
+	workers := targetBytes / chunkSize
+	if targetBytes%chunkSize != 0 {
+		workers++
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 64 {
+		workers = 64
+	}
+	return workers
 }
 
 type chunkResult struct {
