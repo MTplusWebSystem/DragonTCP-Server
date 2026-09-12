@@ -22,6 +22,7 @@ O projeto conta com arquitetura híbrida inteligente, permitindo que clientes le
 - [Instalação em Produção (Systemd)](#-instalação-em-produção-systemd)
 - [Gerenciamento do Fake SSH](#-gerenciamento-do-fake-ssh)
 - [Compilação e Testes](#-compilação-e-testes)
+- [Documentação Oficial (Pasta docs/)](#-documentação-oficial-pasta-docs)
 
 ---
 
@@ -345,6 +346,23 @@ go test -race -run TestMux .
 # Executar suíte completa sem cache
 go test -count=1 ./...
 ```
+
+---
+
+## 📚 Documentação Oficial (Pasta `docs/`)
+
+Para detalhes avançados, guias de implantação e especificações técnicas completas, consulte a documentação dedicada na pasta [`docs/`](docs/):
+
+- 📖 **[Guia Completo de Parâmetros](docs/parameters.md)**: Referência exaustiva de todas as flags CLI do servidor e TUI, diretivas YAML (formatos aninhado e plano, *kebab-case* e *snake_case*), limites de conexão e opções de kernel.
+- 💡 **[Exemplos Práticos (`docs/ex/`)](docs/ex/README.md)**:
+  - [Servidor de Produção](docs/ex/producao.md): VPS Linux de alto tráfego com systemd e sysctl.
+  - [Gestão do Fake SSH](docs/ex/fake_ssh.md): Criação de contas, controle de validade e conexões simultâneas.
+  - [UDPGW para Jogos e VoIP](docs/ex/udpgw_gaming.md): Descarga direta na placa de rede via Linux ABI com `SO_BUSY_POLL`.
+  - [Payloads HTTP e WebSocket](docs/ex/http_payloads.md): Handshake 101 Switching Protocols e bypass de DPI.
+  - [Operação com a CLI TUI](docs/ex/cli_tui.md): Painel visual interativo no terminal (`dragontcp-cli`).
+- ⚡ **[Relatório de Benchmarks](docs/benchmarks.md)**: Resultados de testes de estresse, micro-benchmarks do Go (`internal/wire`), comparativos v1 vs v2 e métricas de latência.
+- 🚀 **[Guia de Instalação e Implantação](docs/installation.md)**: Procedimentos manuais e automatizados, requisitos, permissões e segurança.
+- 🤖 **[Script Instalador Oficial (`install.sh`)](install.sh)**: Automação completa para instalação, compilação, configuração do systemd, firewall e ajustes de kernel no Linux.
 
 ---
 
