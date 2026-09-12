@@ -1,40 +1,65 @@
 # DragonTCP Server
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://golang.org)
-[![Protocol](https://img.shields.io/badge/Protocol-Multiplexed%20v2%20(33%2F9)-blueviolet)](https://github.com)
-[![License](https://img.shields.io/badge/License-Proprietary-red)](#)
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version" />
+  <img src="https://img.shields.io/badge/Protocol-Multiplexed%20v2%20(33%2F9)-7928CA?style=for-the-badge" alt="Protocol" />
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-0078D6?style=for-the-badge" alt="Platform" />
+  <img src="https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge" alt="License" />
+</p>
 
-O **DragonTCP Server** é um servidor de encapsulamento e transporte TCP de alta performance, projetado para operar com eficiência e resiliência em redes restritas, ambientes com inspeção profunda de pacotes (DPI) e cenários com alta concorrência de conexões.
+O **DragonTCP Server** é um servidor de encapsulamento e transporte TCP de ultra-alto desempenho, desenvolvido em Go e projetado especificamente para operar com resiliência, baixa latência e evasão em redes restritas, ambientes com inspeção profunda de pacotes (DPI) e cenários com alta concorrência de conexões.
 
-O projeto conta com arquitetura híbrida inteligente, permitindo que clientes legados (**v1**) e clientes atualizados (**v2 Multiplexado**) coexistam na mesma porta sem conflitos, além de suportar tráfego ofuscado (**XOR / cover prefaces**) e serviços internos de **Fake SSH** e **UDPGW** integrados.
+O projeto conta com arquitetura híbrida inteligente: clientes legados (**v1 Stop-and-Wait**) e modernos (**v2 Multiplexado**) coexistem harmonicamente na mesma porta sem qualquer conflito, acompanhados de serviços internos de **Fake SSH** (com isolamento do sistema operacional), **BadVPN UDPGW** (com descarga direta na placa de rede via Linux ABI) e **CLI TUI** de gerenciamento em tempo real.
 
 ---
 
-## Sumário
+## ⚡ Início Rápido (Quick Start)
+
+Para instalar o servidor e a CLI administrativa em qualquer servidor Linux (Ubuntu, Debian, CentOS, AlmaLinux, Rocky, Alpine ou Arch):
+
+```bash
+# Executar o script instalador oficial automatizado:
+chmod +x install.sh
+sudo ./install.sh install
+```
+
+Após a instalação, abra o painel administrativo interativo:
+```bash
+dragontcp
+```
+
+---
+
+## 📚 Sumário
 
 - [Visão Geral e Novidades da v2](#-visão-geral-e-novidades-da-v2)
 - [Comparativo: Protocolo v1 vs. Protocolo v2](#-comparativo-protocolo-v1-vs-protocolo-v2)
 - [Arquitetura e Fluxo Multiplexado](#-arquitetura-e-fluxo-multiplexado)
 - [Recursos Principais](#-recursos-principais)
-- [Especificação de Cabeçalhos](#-especificação-de-cabeçalhos)
-- [Compatibilidade Híbrida e Sniffing](#-compatibilidade-híbrida-e-sniffing)
+- [Especificação de Cabeçalhos (Wire Format)](#-especificação-de-cabeçalhos-wire-format)
+- [Compatibilidade Híbrida e Sniffing Binário](#-compatibilidade-híbrida-e-sniffing-binário)
+- [BadVPN UDPGW com ABI Linux Nativo](#-badvpn-udpgw-com-abi-linux-nativo)
+- [Serviço Fake SSH Integrado](#-serviço-fake-ssh-integrado)
+- [Interface Administrativa TUI (DragonTCP CLI)](#-interface-administrativa-tui-dragontcp-cli)
 - [Guia de Configuração (YAML e CLI)](#-guia-de-configuração-yaml-e-cli)
-- [Instalação em Produção (Systemd)](#-instalação-em-produção-systemd)
-- [Gerenciamento do Fake SSH](#-gerenciamento-do-fake-ssh)
+- [Instalação e Systemd](#-instalação-e-systemd)
+- [Destaques de Performance e Benchmarks](#-destaques-de-performance-e-benchmarks)
+- [Central de Documentação Oficial (docs/)](#-central-de-documentação-oficial-docs)
 - [Compilação e Testes](#-compilação-e-testes)
-- [Documentação Oficial (Pasta docs/)](#-documentação-oficial-pasta-docs)
+- [Licença](#-licença)
 
 ---
 
 ## 🚀 Visão Geral e Novidades da v2
 
-A versão 2 do DragonTCP Server introduz o **Protocolo Binário Multiplexado v2 (33/9 bytes)**, reformulando o modelo de transporte entre cliente e servidor:
+A versão 2 do DragonTCP Server introduz o **Protocolo Binário Multiplexado v2 (33/9 bytes)**, reformulando por completo o modelo de transporte entre cliente e servidor:
 
-1. **Multiplexação Real em 1 Conexão Física**: Uma única conexão física TCP agora transporta concorrentemente dados de dezenas ou centenas de sessões lógicas.
-2. **Eliminação do Gargalo Stop-and-Wait**: O protocolo v1 exigia que cada par requisição-resposta fosse síncrono ou demandasse uma nova conexão TCP. Na v2, requisições recebem um identificador único de 32 bits (`RequestID`), permitindo despacho assíncrono e intercalação de pacotes no socket.
-3. **Serialização Atômica (`writeMu`)**: Mecanismo interno com mutex dedicado que garante que múltiplos frames de sessões distintas nunca se sobreponham ou corrompam o fluxo binário no socket.
-4. **Economia Expressiva de Recursos**: Queda de até 90% no uso de file descriptors (FDs) e overhead de handshakes TCP no sistema operacional do servidor.
-5. **Configuração Declarativa em Produção**: Suporte a `--config arquivo.yaml` com suporte a chaves kebab-case, snake_case e blocos aninhados, integrando perfeitamente com `systemd`.
+1. **Multiplexação Real em 1 Conexão Física**: Uma única conexão física TCP agora transporta concorrentemente dados de dezenas ou centenas de sessões lógicas sem necessidade de novos *handshakes*.
+2. **Eliminação do Gargalo Stop-and-Wait**: O protocolo v1 exigia que cada requisição-resposta fosse síncrona. Na v2, requisições recebem um identificador único de 32 bits (`RequestID`), permitindo despacho assíncrono e intercalação fluida de pacotes no socket.
+3. **Serialização Atômica (`writeMu`)**: Mecanismo interno com mutex dedicado que garante que múltiplos frames de sessões distintas nunca se sobreponham ou corrompam o fluxo binário no socket físico.
+4. **Economia Expressiva de Recursos**: Queda de até **90% no uso de file descriptors (FDs)** e eliminação do overhead de dezenas de handshakes TCP concorrentes.
+5. **Descarga UDP via ABI Linux**: Módulo UDPGW reescrito com `SO_BINDTODEVICE` e `SO_BUSY_POLL` na interface física, reduzindo a latência de jogos e chamadas de voz para menos de 1 ms.
+6. **Interface de Terminal Moderna (TUI)**: Ferramenta gráfica de terminal (`dragontcp-cli`) com telemetria de tráfego, gestão de contas e corte forçado de sessões (*kill connection*).
 
 ---
 
@@ -42,20 +67,20 @@ A versão 2 do DragonTCP Server introduz o **Protocolo Binário Multiplexado v2 
 
 | Aspecto | Protocolo v1 (Legado) | Protocolo v2 (Multiplexado) | Vantagem v2 |
 | :--- | :--- | :--- | :--- |
-| **Cabeçalho de Requisição** | **29 bytes fixos** | **33 bytes fixos** | Inclui campo `request_id` (4 bytes) |
-| **Formato Requisição** | `[mode: 1B][SessionID: 16B][seq: 8B][len: 4B]` | `[mode: 1B][SessionID: 16B][seq: 8B][request_id: 4B][len: 4B]` | Identificação unívoca por requisição |
-| **Cabeçalho de Resposta** | **5 bytes fixos** | **9 bytes fixos** | Inclui campo `request_id` (4 bytes) |
-| **Formato Resposta** | `[status: 1B][len: 4B]` | `[status: 1B][request_id: 4B][len: 4B]` | Respostas assíncronas correlacionáveis |
-| **Modelo de Transporte** | Stop-and-Wait ou N conexões físicas | Multiplexação assíncrona em 1 conexão física | Elimina latência de handshakes repetidos |
-| **Concorrência** | Serial por conexão TCP | Paralela via goroutines assíncronas | Maior vazão (throughput) agregada |
-| **Uso de Portas/Sockets** | Alto (1 socket por fluxo ativo) | Mínimo (dezenas de sessões por socket) | Reduz pressão no kernel e firewall |
-| **Resistência a Bloqueios** | Suscetível a exaustão de conexões | Canal contínuo e persistente | Dificulta identificação por DPI |
+| **Cabeçalho Requisição** | **29 bytes fixos** | **33 bytes fixos** | Campo `RequestID` de 4 bytes |
+| **Formato Requisição** | `[mode: 1B][SessionID: 16B][seq: 8B][len: 4B]` | `[mode: 1B][SessionID: 16B][seq: 8B][req_id: 4B][len: 4B]` | Identificação unívoca por requisição |
+| **Cabeçalho Resposta** | **5 bytes fixos** | **9 bytes fixos** | Campo `RequestID` de 4 bytes |
+| **Formato Resposta** | `[status: 1B][len: 4B]` | `[status: 1B][req_id: 4B][len: 4B]` | Respostas assíncronas correlacionáveis |
+| **Modelo de Transporte** | Stop-and-Wait / N sockets físicos | Multiplexação assíncrona em 1 socket | Elimina latência de handshakes |
+| **Concorrência** | Serial por conexão TCP | Paralela via goroutines assíncronas | Maior vazão agregada |
+| **Uso de Portas/Sockets** | Alto (1 socket por fluxo ativo) | Mínimo (dezenas de túneis por socket) | Reduz pressão no kernel e firewall |
+| **Resistência a DPI** | Suscetível a exaustão de conexões | Canal contínuo e persistente | Dificulta identificação por firewalls |
 
 ---
 
 ## 🧩 Arquitetura e Fluxo Multiplexado
 
-No protocolo v2, o servidor mantém um loop central de leitura (`dispatchLoop`) na conexão TCP física que lê os frames de 33 bytes de forma sequencial e dispara o processamento de cada requisição em uma goroutine assíncrona independente. 
+No protocolo v2, o servidor mantém um loop central de leitura (`dispatchLoop`) na conexão TCP física que lê os frames de 33 bytes de forma sequencial e dispara o processamento de cada requisição em uma goroutine assíncrona independente.
 
 As respostas geradas pelas diferentes goroutines são enviadas de volta ao cliente passando pelo `muxServerConn`, onde um mutex de escrita (`writeMu`) garante a integridade de cada frame no socket físico.
 
@@ -80,30 +105,30 @@ As respostas geradas pelas diferentes goroutines são enviadas de volta ao clien
 
 ## ✨ Recursos Principais
 
-- **Multiplexador v2 Robusto**: Tratamento completo para todos os modos operacionais (`ModeProbe`, `ModeOpen`, `ModeUpload`, `ModeDownload`, `ModeClose`), com eco obrigatório de `RequestID`.
-- **Compatibilidade Híbrida Automática**: Roteamento dinâmico sem necessidade de portas separadas:
-  - **v1**: Headers de 29/5 bytes continuam funcionando perfeitamente.
-  - **v2**: Headers de 33/9 bytes identificados via detecção no preface (`cover.Profile.MuxV2`) ou via sniffing binário inteligente.
-  - **XOR (UP/OK)**: Suporte herdado e interoperável com clientes LiteVPN v4.
-- **Ofuscação e Proteção DPI**:
-  - Máscaras variáveis de primeiro byte (`headerMask`).
-  - Preface de cobertura com padding criptograficamente aleatório (`cover.Profile`).
-  - Mascaramento de payload por sessão derivado via SHA-256 (`MaskInPlace`), com suporte a modo claro (`ClearPayload`) quando sinalizado no preface.
-- **Fake SSH Integrado**:
-  - Servidor SSH interno executado em loopback (`127.0.0.1:2222` por padrão) ou endereço dedicado.
-  - Banco de usuários em JSON com hash de senha via `bcrypt`.
-  - Limite de conexões simultâneas por conta e controle de expiração em dias.
-  - Menu interativo via CLI (`--ssh-menu`) e subcomandos de automação (`--ssh-user-add`, `--ssh-user-delete`, `--ssh-user-list`).
-- **BadVPN UDPGW Integrado**:
-  - Relay de pacotes UDP compatível com BadVPN/UDPGW (`127.0.0.1:7400`).
-  - Permite suporte a jogos online, chamadas de voz e tráfego UDP em clientes tunelados.
-- **Configuração Flexível (CLI & YAML)**:
-  - Carregamento de arquivo YAML via `--config <caminho.yaml>`.
-  - Ordem estrita de precedência: **Flags de Linha de Comando > Arquivo YAML > Valores Padrão**.
+* **Multiplexador v2 de Alta Concorrência**: Tratamento assíncrono para todos os modos (`ModeProbe`, `ModeOpen`, `ModeUpload`, `ModeDownload`, `ModeClose`), com eco obrigatório de `RequestID`.
+* **Compatibilidade Híbrida Automática**: Roteamento dinâmico sem necessidade de portas separadas:
+  * **v1**: Headers clássicos de 29/5 bytes continuam funcionando perfeitamente.
+  * **v2**: Headers de 33/9 bytes identificados via detecção no preface (`cover.Profile.MuxV2`) ou via sniffing binário inteligente.
+  * **XOR (UP/OK)**: Suporte herdado e interoperável com clientes LiteVPN v4.
+  * **HTTP / WebSocket**: Handshake automático `101 Switching Protocols` para bypass de operadoras com payloads zero-rated.
+* **Ofuscação Criptográfica & Proteção DPI**:
+  * Máscaras variáveis de primeiro byte (`headerMask`).
+  * Preface de cobertura com padding criptograficamente aleatório (`cover.Profile`).
+  * Mascaramento de payload por sessão derivado via SHA-256 (`MaskInPlace`), com throughput ultra-rápido (>9.5 GB/s em modo claro).
+* **Fake SSH Integrado**:
+  * Daemon SSH interno executado em loopback (`127.0.0.1:2222`) e interceptado internamente por nome de host (`dragontcp-ssh.internal`).
+  * Banco de usuários isolado em JSON com hash `bcrypt`.
+  * Controle de validade em dias e limite de conexões simultâneas por usuário.
+  * Menu interativo via terminal (`--ssh-menu`) e subcomandos de automação CLI.
+* **BadVPN UDPGW Integrado de Baixa Latência**:
+  * Modo **`native`** com chamadas diretas de Linux ABI: `SO_BINDTODEVICE`, `SO_BUSY_POLL` e buffers de 4 MB para jogos e chamadas de voz estáveis.
+* **Interface de Terminal (TUI) & API Administrativa**:
+  * Endpoint REST local (`127.0.0.1:53080`) com monitoramento de métricas, conexões ativas e encerramento forçado de túneis.
+  * CLI visual moderna construída em Charmbracelet Bubble Tea / Lipgloss (`dragontcp-cli`).
 
 ---
 
-## 📦 Especificação de Cabeçalhos
+## 📦 Especificação de Cabeçalhos (Wire Format)
 
 ### Requisição v2 (33 bytes)
 
@@ -149,137 +174,182 @@ As respostas geradas pelas diferentes goroutines são enviadas de volta ao clien
 | `ModeOpen` | `0x01` | Abertura de túnel TCP para `host:port` com autenticação por token |
 | `ModeUpload` | `0x02` | Envio sequencial de dados do cliente para o destino |
 | `ModeDownload`| `0x03` | Solicitação em lote de download de dados do destino |
-| `ModeClose` | `0x04` | Fechamento explícito da sessão lógica e liberação de sockets |
+| `ModeClose` | `0x04` | Fechamento explícito da sessão lógica e liberação imediata de recursos |
 
 | Status | Valor | Descrição |
 | :--- | :---: | :--- |
 | `StatusOK` | `0x00` | Operação concluída com sucesso |
-| `StatusError` | `0x01` | Erro na operação (corpo contém a mensagem de texto do erro) |
+| `StatusError` | `0x01` | Erro na operação (corpo contém a mensagem em texto claro) |
 | `StatusData` | `0x02` | Frame contendo fatia de dados recebida do alvo |
 | `StatusWait` | `0x03` | Lote consumido sem mais dados imediatos no buffer |
 | `StatusEOF` | `0x04` | Conexão remota com o destino foi encerrada |
 
 ---
 
-## 🔍 Compatibilidade Híbrida e Sniffing
+## 🔍 Compatibilidade Híbrida e Sniffing Binário
 
-O servidor utiliza uma máquina de estados de baixa sobrecarga na função `sniffWire` para classificar o tráfego que chega na porta:
+O servidor utiliza uma máquina de estados de baixíssima sobrecarga (`sniffWire`) para classificar conexões de forma não-destrutiva via `bufio.Reader.Peek`:
 
-1. **Cover Preface (`cover.Profile`)**:
-   - Os primeiros 12 bytes são verificados contra a assinatura do preface `DTC3`.
-   - Se for um preface válido, extrai o `HeaderMask`, descarta o padding aleatório e lê a flag de capacidade `MuxV2` (bit 2). Se ativo, encaminha imediatamente para o manipulador multiplexado v2.
-2. **XOR Wire (UP/OK)**:
-   - Se o primeiro byte indicar o cabeçalho clássico do protocolo XOR (`UP`), a conexão é roteada para `handleXOR`.
-3. **Conexões Binárias Diretas**:
-   - Para conexões sem preface, o sniffer inspeciona o primeiro registro de forma não-destrutiva via `bufio.Reader.Peek`:
-     - Em `ModeProbe`: valida a presença de `ProbeMagic` (`DTP2`) no offset 29 (v1) ou offset 33 (v2).
-     - Em `ModeOpen`: analisa a correlação entre o comprimento do payload e os campos `tl + hl + 6` no offset 29 (v1) versus offset 33 (v2).
-     - Em `ModeDownload`: diferencia o tamanho fixo de 14 bytes entre `seq`/`len` e `request_id`.
-   - Garante 100% de precisão sem bloquear e sem descartar nenhum byte.
+1. **Cover Preface (`cover.Profile`)**: Inspeciona a assinatura de 12 bytes (`DTC3`), extrai a máscara e lê a capacidade multiplexada v2.
+2. **XOR Wire (UP/OK)**: Detecta cabeçalhos legados do protocolo XOR e despacha para `handleXOR`.
+3. **Payloads HTTP / WebSocket**: Identifica requisições HTTP normais ou upgrades WebSocket, responde com `HTTP/1.1 101 Switching Protocols` e faz upgrade instantâneo para o túnel Mux v2.
+4. **Conexões Binárias Diretas**: Distingue entre frames v1 (29B) e v2 (33B) analisando offsets de `ProbeMagic` (`DTP2`) e comprimentos de campos sem bloquear e sem descartar nenhum byte.
+
+---
+
+## 🎮 BadVPN UDPGW com ABI Linux Nativo
+
+O UDPGW embutido no DragonTCP elimina a necessidade de instalar pacotes externos do BadVPN e traz três modos operacionais configuráveis no YAML (`udpgw.mode`):
+
+* **`native` (Padrão Linux):** Utiliza `SO_BINDTODEVICE` para descarregar os datagramas UDP diretamente na interface física (ex.: `eth0`), ignorando a tabela de rotas do kernel, e ativa `SO_BUSY_POLL` (polling ativo de 50 µs na fila da NIC), reduzindo o jitter e mantendo latência inferior a 1 ms para Free Fire, PUBG e chamadas de voz.
+* **`tun`:** Injeta pacotes diretamente no dispositivo `/dev/net/tun` do sistema operacional.
+* **`standard`:** Modo portável user-space compatível com qualquer sistema operacional (Linux, Windows, macOS).
+
+---
+
+## 🔑 Serviço Fake SSH Integrado
+
+O Fake SSH embutido roda em loopback (`127.0.0.1:2222`) e só pode ser acessado através de túneis abertos para o host reservado `dragontcp-ssh.internal`.
+
+### Gerenciamento Rápido via Terminal:
+
+```bash
+# Adicionar usuário com validade de 30 dias e máximo de 2 conexões:
+dragontcp-server --config /etc/dragontcp/dragontcp.yaml \
+  --ssh-user-add "cliente1" \
+  --ssh-user-password "Senha@2026" \
+  --ssh-user-days 30 \
+  --ssh-user-max-connections 2
+
+# Listar usuários e status de expiração:
+dragontcp-server --config /etc/dragontcp/dragontcp.yaml --ssh-user-list
+
+# Excluir usuário:
+dragontcp-server --config /etc/dragontcp/dragontcp.yaml --ssh-user-delete "cliente1"
+
+# Menu interativo assistido:
+dragontcp-server --config /etc/dragontcp/dragontcp.yaml --ssh-menu
+```
+
+---
+
+## 🖥️ Interface Administrativa TUI (DragonTCP CLI)
+
+A CLI interativa (`dragontcp-cli` ou atalho `dragontcp`) comunica-se via API REST local com o servidor:
+
+```bash
+dragontcp
+```
+
+### Funcionalidades da TUI:
+* **Monitoramento em Tempo Real**: Telemetria de tráfego (Up/Down em MiB/GiB), conexões ativas e sessões lógicas.
+* **Métricas do Runtime Go**: Goroutines ativas, consumo de RAM alocada e ciclos do Garbage Collector.
+* **Gestão Visual de Usuários**: Criação, exclusão e bloqueio de usuários do Fake SSH com formulários assistidos.
+* **Monitor de Conexões e "Kill Session"**: Visualize cada túnel aberto, destino remoto e buffer em retenção, com opção de encerrar qualquer conexão imediatamente.
+* **Editor YAML Embutido**: Edição direta das diretivas de configuração com validação e salvamento no disco.
 
 ---
 
 ## ⚙️ Guia de Configuração (YAML e CLI)
 
-O servidor pode ser configurado inteiramente através de um arquivo YAML ou via flags tradicionais de linha de comando.
+O DragonTCP adota uma ordem estrita de precedência:
+```text
+Flags de Linha de Comando  >  Arquivo YAML (--config)  >  Valores Padrão Internos
+```
 
-### Arquivo de Configuração (`dragontcp.yaml`)
-
-Crie o arquivo `/etc/dragontcp/dragontcp.yaml` com base no modelo:
+### Exemplo de Configuração de Produção (`/etc/dragontcp/dragontcp.yaml`):
 
 ```yaml
-# ==============================================================================
-# DragonTCP Server - Arquivo de Configuração de Produção
-# ==============================================================================
-
 # Rede e Escuta
-host: "0.0.0.0"                    # Interface de escuta (0.0.0.0 para todas)
-port: 53                           # Porta principal de escuta (DNS / Porta 53 recomendada)
-port_alt: 80                       # Porta secundária simultânea (0 para desativar)
+host: "0.0.0.0"                    # Interface de escuta
+port: 53                           # Porta principal (DNS / Bypass DPI)
+port_alt: 80                       # Porta secundária (HTTP / Payloads)
 
 # Segurança e Limites
-token: ""                          # Token compartilhado opcional de autorização
+token: ""                          # Token secreto de autenticação opcional
 max_connections: 20000             # Limite máximo de túneis simultâneos
-allow_private: false               # Permitir destinos privados/loopback (RFC 1918)
-
-# Cache de Resolução DNS Interno
-dns_cache_ttl: 30s                 # Tempo de vida (TTL) do cache DNS
-dns_cache_size: 4096               # Quantidade máxima de hostnames em cache
+allow_private: false               # Bloquear acesso a RFC 1918 / Loopback
 
 # Performance e Buffers
-tcp_buffer: 0                      # Buffer TCP em bytes (0 = autotuning do kernel Linux)
-chunk_max: 1048576                 # Tamanho máximo de chunk de payload (32 B até 1 MiB)
-chunk_buffered: 32                 # Buffer de download por sessão em unidades de 64 KiB (~2 MiB)
-chunk_poll_wait: 200ms             # Espera do long-poll do servidor por novos dados
-chunk_session_timeout: 2m          # Tempo de inatividade antes de encerrar sessão ociosa
+dns_cache_ttl: 30s                 # TTL do cache DNS interno
+dns_cache_size: 4096               # Quantidade de entradas no cache DNS
+tcp_buffer: 0                      # 0 = Autotuning do kernel Linux
+chunk_max: 1048576                 # Payload adaptativo de até 1 MiB
+chunk_buffered: 32                 # Buffer de download (~2 MiB por sessão)
+chunk_poll_wait: 200ms             # Espera do long-poll por dados
+chunk_session_timeout: 2m          # Inatividade máxima antes de fechar sessão
 
 # Diagnósticos e Logs
-debug: false                       # Ativar logs de conexões, erros e estatísticas
-debug_chunks: false                # Logar cada registro binário trafegado (muito verboso)
-debug_stats_interval: 5s           # Intervalo de estatísticas periódicas (0 para desativar)
+debug: false                       # Logs operacionais detalhados
+debug_chunks: false                # Log de cada frame individual (apenas testes)
+debug_stats_interval: 10s          # Intervalo de telemetria no console
 
-# Fake SSH Interno (Túnel Integrado)
+# API de Administração Local (para a TUI)
+admin_addr: "127.0.0.1:53080"
+
+# Fake SSH Integrado
 ssh:
-  enable: true                     # Habilitar o serviço interno de Fake SSH
-  listen: "127.0.0.1:2222"         # Endereço de escuta do Fake SSH
-  internal_host: "dragontcp-ssh.internal"  # Host interceptado para conexões SSH
-  host_key: "dragontcp_ssh_host_key"       # Caminho da chave privada ed25519 do servidor
-  users: "dragontcp-users.json"            # Caminho da base de usuários JSON
+  enable: true
+  listen: "127.0.0.1:2222"
+  internal_host: "dragontcp-ssh.internal"
+  host_key: "/etc/dragontcp/dragontcp_ssh_host_key"
+  users: "/etc/dragontcp/dragontcp-users.json"
 
 # BadVPN UDPGW Integrado
 udpgw:
-  enable: true                     # Habilitar o relay UDPGW
-  listen: "127.0.0.1:7400"         # Endereço de escuta do UDPGW (loopback recomendado)
-  internal_host: "dragontcp-udpgw.internal" # Host interceptado para UDPGW
-  max_clients: 10000               # Limite de clientes UDP simultâneos
-  debug: false                     # Logs detalhados de erros UDP
+  enable: true
+  listen: "127.0.0.1:7400"
+  internal_host: "dragontcp-udpgw.internal"
+  max_clients: 10000
+  mode: "native"                   # ABI Linux: SO_BINDTODEVICE e SO_BUSY_POLL
+  interface: "auto"                # Detecta placa física de saída (eth0, ens3)
+  busy_poll_us: 50                 # 50 µs de polling na fila da NIC
+  debug: false
 ```
-
-### Regras de Precedência
-
-```text
-Flags CLI (--port, --debug)  >  Arquivo YAML (--config)  >  Valores Padrão Internos
-```
-
-Exemplo: se o arquivo `dragontcp.yaml` definir `port: 53`, mas o servidor for iniciado com `--port 443`, a porta **443** será utilizada.
 
 ---
 
-## 🐧 Instalação em Produção (Systemd)
+## 🐧 Instalação e Systemd
 
-Graças ao suporte ao arquivo `--config`, a unit do `systemd` fica extremamente limpa e simples de manter.
+### Instalação Automatizada (Recomendado)
+Execute o script instalador oficial:
+```bash
+chmod +x install.sh
+sudo ./install.sh install
+```
 
-1. Compile e mova o binário para o diretório de sistema:
+### Instalação Manual Passo a Passo:
+1. Compile os binários de produção:
    ```bash
-   go build -o /usr/local/bin/dragontcp-server .
-   chmod +x /usr/local/bin/dragontcp-server
+   go build -ldflags="-s -w" -o /usr/local/bin/dragontcp-server .
+   go build -ldflags="-s -w" -o /usr/local/bin/dragontcp-cli ./cli
+   ln -sf /usr/local/bin/dragontcp-cli /usr/local/bin/dragontcp
    ```
-
-2. Crie o diretório de configuração e copie o arquivo:
+2. Crie os diretórios e copie a configuração:
    ```bash
-   mkdir -p /etc/dragontcp
+   mkdir -p /etc/dragontcp /var/log/dragontcp
    cp dragontcp.example.yaml /etc/dragontcp/dragontcp.yaml
    ```
-
 3. Crie a unit do serviço em `/etc/systemd/system/dragontcp.service`:
    ```ini
    [Unit]
    Description=DragonTCP Server Daemon
-   After=network.target
+   After=network.target network-online.target
+   Wants=network-online.target
 
    [Service]
    Type=simple
    User=root
-   LimitNOFILE=65536
+   WorkingDirectory=/etc/dragontcp
    ExecStart=/usr/local/bin/dragontcp-server --config /etc/dragontcp/dragontcp.yaml
    Restart=always
    RestartSec=3
+   LimitNOFILE=65536
 
    [Install]
    WantedBy=multi-user.target
    ```
-
-4. Habilite e inicie o serviço:
+4. Ative e inicie o daemon:
    ```bash
    systemctl daemon-reload
    systemctl enable --now dragontcp.service
@@ -288,81 +358,62 @@ Graças ao suporte ao arquivo `--config`, a unit do `systemd` fica extremamente 
 
 ---
 
-## 🔑 Gerenciamento do Fake SSH
+## ⚡ Destaques de Performance e Benchmarks
 
-O Fake SSH integrado aceita autenticação via usuário e senha, isolando as credenciais de sistema do servidor real.
+Resultados reais obtidos com o compilador Go nos micro-benchmarks do pacote `internal/wire`:
 
-### Comandos de Gerenciamento
+* **Criptografia SHA-256 In-Place (`BenchmarkMask1MiB`)**: **~280 MB/s** por núcleo de CPU com zero alocações adicionais.
+* **Modo Claro / Clear Payload (`BenchmarkWriteRequest1MiB/clear`)**: **>9.5 GB/s** (109.5 ns/op), aproveitando a criptografia nativa de protocolos superiores (como TLS 1.3 ou SSH).
+* **Concorrência com 64 Workers (`TestMuxParallelWorkersIperf`)**: Zero deadlocks no mutex `writeMu` e zero erros de transmissão.
+* **UDPGW em Modo Nativo**: Redução de ~85% na latência e zero descarte de datagramas em rajadas graças a buffers forçados de 4 MB.
 
-- **Menu Interativo**:
-  ```bash
-  dragontcp-server --config /etc/dragontcp/dragontcp.yaml --ssh-menu
-  ```
-- **Adicionar ou Atualizar Usuário**:
-  ```bash
-  dragontcp-server --config /etc/dragontcp/dragontcp.yaml \
-    --ssh-user-add usuario1 \
-    --ssh-user-password "SenhaForte123!" \
-    --ssh-user-days 30 \
-    --ssh-user-max-connections 2
-  ```
-- **Remover Usuário**:
-  ```bash
-  dragontcp-server --config /etc/dragontcp/dragontcp.yaml --ssh-user-delete usuario1
-  ```
-- **Listar Usuários Ativos**:
-  ```bash
-  dragontcp-server --config /etc/dragontcp/dragontcp.yaml --ssh-user-list
-  ```
+Para análise completa de métricas, gráficos e comandos de reprodução, consulte o [Relatório de Benchmarks](docs/benchmarks.md).
 
-> [!TIP]
-> Ao usar `--config`, o utilitário obtém automaticamente o caminho correto do arquivo `ssh-users` configurado no YAML, dispensando flags extras.
+---
+
+## 📚 Central de Documentação Oficial (`docs/`)
+
+O repositório conta com uma central de documentação completa e detalhada:
+
+| Documento | Descrição Principal |
+| :--- | :--- |
+| 📖 **[Guia de Parâmetros](docs/parameters.md)** | Especificação exaustiva de todas as flags CLI, opções YAML e variáveis de kernel. |
+| ⚡ **[Relatório de Benchmarks](docs/benchmarks.md)** | Metodologia de testes, comparativos v1 vs v2, gráficos e comandos de benchmark. |
+| 🚀 **[Guia de Instalação](docs/installation.md)** | Manual detalhado de compilação, requisitos, segurança e configuração de firewall. |
+| 🤖 **[Script Instalador (`install.sh`)](install.sh)** | Script bash oficial de automação completa para Linux. |
+| 💡 **[Pasta de Exemplos (`docs/ex/`)](docs/ex/README.md)** | Cenários práticos prontos para implantação: |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ [Servidor de Produção](docs/ex/producao.md) | Configuração VPS de alto tráfego para 20.000 conexões com systemd e sysctl. |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ [Gestão do Fake SSH](docs/ex/fake_ssh.md) | Criação de usuários em lote, expiração, limites de conexões e menu interativo. |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ [UDPGW para Jogos e VoIP](docs/ex/udpgw_gaming.md) | Calibração do modo ABI Linux (`SO_BUSY_POLL`) para jogos de baixa latência. |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ [Payloads HTTP e Bypass DPI](docs/ex/http_payloads.md) | Handshake WebSocket 101 e evasão em redes móveis com domínios zero-rated. |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ [Operação via CLI TUI](docs/ex/cli_tui.md) | Manual de uso do painel interativo no terminal (`dragontcp-cli`). |
 
 ---
 
 ## 🛠️ Compilação e Testes
 
-### Compilação do Binário
+### Compilar Binários de Produção
 
 ```bash
-# Compilar binário de produção
+# Servidor
 go build -ldflags="-s -w" -o dragontcp-server .
+
+# CLI Administrativa
+go build -ldflags="-s -w" -o dragontcp-cli ./cli
 ```
 
-### Executar Testes Automatizados
-
-O repositório inclui suíte abrangente cobrindo todas as camadas do sistema:
+### Executar a Suíte de Testes Automatizados
 
 ```bash
-# Executar todos os testes
+# Executar todos os testes do projeto
 go test -v ./...
-
-# Executar testes específicos de multiplexação e concorrência
-go test -v -run TestMux .
 
 # Executar testes com o detector de condições de corrida (Race Detector)
 go test -race -run TestMux .
 
-# Executar suíte completa sem cache
-go test -count=1 ./...
+# Executar os micro-benchmarks do protocolo wire
+go test -bench=. -benchmem -run=^$ ./internal/wire
 ```
-
----
-
-## 📚 Documentação Oficial (Pasta `docs/`)
-
-Para detalhes avançados, guias de implantação e especificações técnicas completas, consulte a documentação dedicada na pasta [`docs/`](docs/):
-
-- 📖 **[Guia Completo de Parâmetros](docs/parameters.md)**: Referência exaustiva de todas as flags CLI do servidor e TUI, diretivas YAML (formatos aninhado e plano, *kebab-case* e *snake_case*), limites de conexão e opções de kernel.
-- 💡 **[Exemplos Práticos (`docs/ex/`)](docs/ex/README.md)**:
-  - [Servidor de Produção](docs/ex/producao.md): VPS Linux de alto tráfego com systemd e sysctl.
-  - [Gestão do Fake SSH](docs/ex/fake_ssh.md): Criação de contas, controle de validade e conexões simultâneas.
-  - [UDPGW para Jogos e VoIP](docs/ex/udpgw_gaming.md): Descarga direta na placa de rede via Linux ABI com `SO_BUSY_POLL`.
-  - [Payloads HTTP e WebSocket](docs/ex/http_payloads.md): Handshake 101 Switching Protocols e bypass de DPI.
-  - [Operação com a CLI TUI](docs/ex/cli_tui.md): Painel visual interativo no terminal (`dragontcp-cli`).
-- ⚡ **[Relatório de Benchmarks](docs/benchmarks.md)**: Resultados de testes de estresse, micro-benchmarks do Go (`internal/wire`), comparativos v1 vs v2 e métricas de latência.
-- 🚀 **[Guia de Instalação e Implantação](docs/installation.md)**: Procedimentos manuais e automatizados, requisitos, permissões e segurança.
-- 🤖 **[Script Instalador Oficial (`install.sh`)](install.sh)**: Automação completa para instalação, compilação, configuração do systemd, firewall e ajustes de kernel no Linux.
 
 ---
 
