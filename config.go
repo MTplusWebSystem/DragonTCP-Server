@@ -44,6 +44,7 @@ type ServerConfig struct {
 	Debug          bool          `yaml:"debug"`
 	DebugChunks    bool          `yaml:"debug_chunks"`
 	DebugStats     time.Duration `yaml:"debug_stats_interval"`
+	AdminAddr      string        `yaml:"admin_addr"`
 
 	SSH   SSHConfig   `yaml:"ssh"`
 	UDPGW UDPGWConfig `yaml:"udpgw"`
@@ -68,6 +69,7 @@ func DefaultConfig() ServerConfig {
 		Debug:          false,
 		DebugChunks:    false,
 		DebugStats:     5 * time.Second,
+		AdminAddr:      "127.0.0.1:53080",
 
 		SSH: SSHConfig{
 			Enable:       true,
@@ -136,6 +138,8 @@ type rawServerConfig struct {
 	DebugChunksKebab    *bool          `yaml:"debug-chunks"`
 	DebugStats          *time.Duration `yaml:"debug_stats_interval"`
 	DebugStatsKebab     *time.Duration `yaml:"debug-stats-interval"`
+	AdminAddr           *string        `yaml:"admin_addr"`
+	AdminAddrKebab      *string        `yaml:"admin-addr"`
 
 	SSH                *rawSSHConfig `yaml:"ssh"`
 	SSHEnableFlat      *bool         `yaml:"ssh_enable"`
@@ -252,6 +256,11 @@ func LoadConfigBytes(data []byte) (*ServerConfig, error) {
 		cfg.DebugStats = *raw.DebugStats
 	} else if raw.DebugStatsKebab != nil {
 		cfg.DebugStats = *raw.DebugStatsKebab
+	}
+	if raw.AdminAddr != nil {
+		cfg.AdminAddr = *raw.AdminAddr
+	} else if raw.AdminAddrKebab != nil {
+		cfg.AdminAddr = *raw.AdminAddrKebab
 	}
 
 	// SSH section: nested takes precedence over flat if present
@@ -372,6 +381,7 @@ type serverFlagTargets struct {
 	debugEnabled      *bool
 	debugChunks       *bool
 	debugStats        *time.Duration
+	adminAddr         *string
 	sshEnable         *bool
 	sshListen         *string
 	sshInternalHost   *string
@@ -434,6 +444,9 @@ func applyConfig(cfg *ServerConfig, visited map[string]bool, t serverFlagTargets
 	}
 	if !visited["debug-stats-interval"] && t.debugStats != nil {
 		*t.debugStats = cfg.DebugStats
+	}
+	if !visited["admin-addr"] && t.adminAddr != nil && cfg.AdminAddr != "" {
+		*t.adminAddr = cfg.AdminAddr
 	}
 
 	// SSH

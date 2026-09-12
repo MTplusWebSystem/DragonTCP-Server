@@ -3,9 +3,49 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type logRing struct {
+	mu    sync.RWMutex
+	lines []string
+	max   int
+}
+
+func newLogRing(max int) *logRing {
+	return &logRing{max: max}
+}
+
+func (r *logRing) add(line string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.lines) >= r.max {
+		r.lines = r.lines[1:]
+	}
+	r.lines = append(r.lines, line)
+}
+
+func (r *logRing) get(n int) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if n <= 0 || n > len(r.lines) {
+		n = len(r.lines)
+	}
+	start := len(r.lines) - n
+	out := make([]string, n)
+	copy(out, r.lines[start:])
+	return out
+}
+
+var globalLogRing = newLogRing(500)
 
 type serverDebug struct {
 	enabled    bool
@@ -39,25 +79,33 @@ func newServerDebug(enabled, chunks bool, statsEvery time.Duration) *serverDebug
 }
 
 func (d *serverDebug) logf(format string, args ...any) {
+	msg := fmt.Sprintf("%s [DEBUG] "+format, append([]any{time.Now().Format("2006-01-02 15:04:05.000")}, args...)...)
+	globalLogRing.add(msg)
 	if d == nil || !d.enabled {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s [DEBUG] "+format+"\n", append([]any{time.Now().Format("2006-01-02 15:04:05.000")}, args...)...)
+	fmt.Fprintln(os.Stderr, msg)
 }
 
 func (d *serverDebug) chunkf(format string, args ...any) {
+	msg := fmt.Sprintf("%s [CHUNK] "+format, append([]any{time.Now().Format("2006-01-02 15:04:05.000")}, args...)...)
+	globalLogRing.add(msg)
 	if d == nil || !d.chunks {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s [CHUNK] "+format+"\n", append([]any{time.Now().Format("2006-01-02 15:04:05.000")}, args...)...)
+	fmt.Fprintln(os.Stderr, msg)
 }
 
 func (d *serverDebug) errorf(format string, args ...any) {
+	if d != nil {
+		d.errors.Add(1)
+	}
+	msg := fmt.Sprintf("%s [ERROR] "+format, append([]any{time.Now().Format("2006-01-02 15:04:05.000")}, args...)...)
+	globalLogRing.add(msg)
 	if d == nil || !d.enabled {
 		return
 	}
-	d.errors.Add(1)
-	fmt.Fprintf(os.Stderr, "%s [ERROR] "+format+"\n", append([]any{time.Now().Format("2006-01-02 15:04:05.000")}, args...)...)
+	fmt.Fprintln(os.Stderr, msg)
 }
 
 func (d *serverDebug) statsLoop() {

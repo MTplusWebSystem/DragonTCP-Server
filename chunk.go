@@ -157,13 +157,12 @@ func (s *streamSession) readAt(offset uint64, limit int, wait time.Duration) ([]
 				if firstDataAt.IsZero() {
 					firstDataAt = time.Now()
 				}
-				// SSH packetization naturally feeds this stream in ~tens-of-KiB
-				// bursts. Returning the first burst turns a DragonTCP download into
-				// one SSH packet per WAN RTT. Internal carrier sessions therefore
-				// get a slightly wider coalescing window and can accumulate at least
-				// 512 KiB before the pull response is emitted. Ordinary destinations
-				// retain the original 2 ms latency-oriented behavior.
-				coalesceDelay := 2 * time.Millisecond
+				// Small-write coalescing: if less than the requested limit is
+				// available, wait a short interval (a few ms) for the target to produce
+				// more data, preventing applications that write 1 byte at a time from
+				// flooding the connection with per-byte frames and header overhead.
+				// For internal carrier sessions (bulkCoalesce), a wider window is used.
+				coalesceDelay := 5 * time.Millisecond
 				coalesceGoal := limit
 				if s.bulkCoalesce {
 					coalesceDelay = 25 * time.Millisecond
@@ -176,9 +175,6 @@ func (s *streamSession) readAt(offset uint64, limit int, wait time.Duration) ([]
 				if available < limit && available < coalesceGoal && !s.eof && wait > 0 && elapsed < coalesceDelay {
 					ch := s.notify
 					remaining := coalesceDelay - elapsed
-					if untilDeadline := time.Until(deadline); untilDeadline < remaining {
-						remaining = untilDeadline
-					}
 					s.mu.Unlock()
 					if remaining > 0 {
 						select {
@@ -314,6 +310,43 @@ func (m *streamManager) remove(sid wire.SessionID) {
 }
 
 func (m *streamManager) count() int { m.mu.RLock(); n := len(m.sessions); m.mu.RUnlock(); return n }
+
+type ConnectionInfo struct {
+	SessionID     string    `json:"session_id"`
+	TargetName    string    `json:"target_name"`
+	BaseOffset    uint64    `json:"base_offset"`
+	BufferedBytes int       `json:"buffered_bytes"`
+	LastSeen      time.Time `json:"last_seen"`
+	Closed        bool      `json:"closed"`
+	EOF           bool      `json:"eof"`
+	AgeSeconds    int64     `json:"age_seconds"`
+}
+
+func (m *streamManager) listConnections() []ConnectionInfo {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	now := time.Now()
+	out := make([]ConnectionInfo, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		s.mu.Lock()
+		info := ConnectionInfo{
+			SessionID:     fmt.Sprintf("%x", s.sid[:]),
+			TargetName:    s.targetName,
+			BaseOffset:    s.base,
+			BufferedBytes: len(s.buf),
+			LastSeen:      s.lastSeen,
+			Closed:        s.closed,
+			EOF:           s.eof,
+			AgeSeconds:    int64(now.Sub(s.lastSeen).Seconds()),
+		}
+		s.mu.Unlock()
+		out = append(out, info)
+	}
+	return out
+}
 
 func (m *streamManager) cleanupLoop() {
 	ticker := time.NewTicker(30 * time.Second)

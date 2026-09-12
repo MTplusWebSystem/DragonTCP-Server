@@ -53,6 +53,9 @@ debug: false                       # Log sessions, connections, errors, and stat
 debug_chunks: false                # Log every chunk protocol record (very verbose)
 debug_stats_interval: 5s           # Interval for periodic debug statistics (0 to disable)
 
+# Administration & CLI API
+admin_addr: "127.0.0.1:53080"      # Local HTTP admin endpoint for the TUI CLI (empty to disable)
+
 # Internal Fake SSH Service
 ssh:
   enable: true                     # Enable internal tunnel-only SSH server

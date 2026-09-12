@@ -333,6 +333,21 @@ func (s *sshUserStore) updateSettings(username string, days, maxConnections int)
 	return fmt.Errorf("SSH user %q not found", username)
 }
 
+func (s *sshUserStore) setDisabled(username string, disabled bool) error {
+	username = normalizeSSHUsername(username)
+	records, err := s.snapshot()
+	if err != nil {
+		return err
+	}
+	for i := range records {
+		if records[i].Username == username {
+			records[i].Disabled = disabled
+			return s.writeRecords(records)
+		}
+	}
+	return fmt.Errorf("SSH user %q not found", username)
+}
+
 func generateSSHPassword() (string, error) {
 	buf := make([]byte, 18)
 	if _, err := rand.Read(buf); err != nil {

@@ -377,3 +377,104 @@ func TestFakeIperfProbeUploadAndDownload(t *testing.T) {
 		}
 	})
 }
+
+func TestStreamSessionSmallWriteCoalescing(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	var sid wire.SessionID
+	s := newStreamSession(sid, server, "test-target:80", 1024*1024, 4*1024*1024, false, nil)
+	defer s.close()
+
+	// Simulate an application that writes 1 byte at a time (5 bytes total, 1ms apart).
+	go func() {
+		for i := 0; i < 5; i++ {
+			time.Sleep(1 * time.Millisecond)
+			if _, err := client.Write([]byte{byte('A' + i)}); err != nil {
+				return
+			}
+		}
+	}()
+
+	start := time.Now()
+	// Long poll of 200ms with a limit of 1024 bytes.
+	data, status, err := s.readAt(0, 1024, 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("readAt failed: %v", err)
+	}
+	if status != wire.StatusData {
+		t.Fatalf("expected StatusData, got %d", status)
+	}
+	// Small writes should coalesce into a single payload, not 1 byte.
+	if len(data) < 2 {
+		t.Fatalf("expected coalesced payload (>=2 bytes), got %d bytes: %q", len(data), data)
+	}
+	// The coalescing window should return in a few ms, NOT waiting the full 200ms long-poll window.
+	if elapsed >= 100*time.Millisecond {
+		t.Fatalf("coalescing waited too long (%v), expected short window (<100ms)", elapsed)
+	}
+}
+
+func TestStreamSessionBatchDownloadDrainsWithoutWait(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	var sid wire.SessionID
+	s := newStreamSession(sid, server, "test-target:80", 1024*1024, 4*1024*1024, false, nil)
+	defer s.close()
+
+	// 1. Empty buffer with long poll should wait and return StatusWait on timeout.
+	start := time.Now()
+	_, status, err := s.readAt(0, 1024, 30*time.Millisecond)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("readAt empty failed: %v", err)
+	}
+	if status != wire.StatusWait {
+		t.Fatalf("expected StatusWait, got %d", status)
+	}
+	if elapsed < 25*time.Millisecond {
+		t.Fatalf("expected to wait close to pollWait, elapsed: %v", elapsed)
+	}
+
+	// 2. Write 100 bytes into the buffer.
+	testPayload := bytes.Repeat([]byte("X"), 100)
+	if _, err := client.Write(testPayload); err != nil {
+		t.Fatal(err)
+	}
+	// Allow target reader to buffer.
+	time.Sleep(10 * time.Millisecond)
+
+	// Batch simulation: count = 3, limit = 50.
+	// Record 0 (i=0): wait = 200ms. Drains first 50 bytes immediately.
+	data0, status0, err := s.readAt(0, 50, 200*time.Millisecond)
+	if err != nil || status0 != wire.StatusData || len(data0) != 50 {
+		t.Fatalf("record 0 mismatch: status=%d len=%d err=%v", status0, len(data0), err)
+	}
+
+	// Record 1 (i=1): wait = 0 (subsequent record). Drains remaining 50 bytes immediately.
+	data1, status1, err := s.readAt(50, 50, 0)
+	if err != nil || status1 != wire.StatusData || len(data1) != 50 {
+		t.Fatalf("record 1 mismatch: status=%d len=%d err=%v", status1, len(data1), err)
+	}
+
+	// Record 2 (i=2): wait = 0 (subsequent record). Buffer is now empty!
+	// Must return StatusWait immediately WITHOUT waiting!
+	startEmpty := time.Now()
+	_, status2, err := s.readAt(100, 50, 0)
+	drainElapsed := time.Since(startEmpty)
+
+	if err != nil {
+		t.Fatalf("record 2 error: %v", err)
+	}
+	if status2 != wire.StatusWait {
+		t.Fatalf("expected StatusWait immediately, got %d", status2)
+	}
+	if drainElapsed > 10*time.Millisecond {
+		t.Fatalf("subsequent record waited %v, expected immediate return (<10ms)", drainElapsed)
+	}
+}

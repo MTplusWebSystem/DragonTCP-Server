@@ -540,3 +540,94 @@ func TestMuxErrorsAndValidation(t *testing.T) {
 		t.Fatalf("expected private target blocked error: %+v, err: %v", resp, err)
 	}
 }
+
+func TestMuxDownloadBatchDrainsBufferImmediately(t *testing.T) {
+	echoLn, echoHost, echoPort := startEchoTarget(t)
+	defer echoLn.Close()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	manager := newStreamManager(time.Minute, nil)
+	cache := newDNSCache(time.Minute, 1024)
+	mc := newMuxServerConn(serverConn, 0, false)
+
+	go handleMuxConnection(mc, "secret-token", true, cache, 0, manager, 65536, 1024*1024, 200*time.Millisecond, nil)
+
+	var sid wire.SessionID
+	sid[0] = 0xbb
+	sid[15] = 0xcc
+
+	// Open session
+	openPayload := encodeOpenPayload("secret-token", echoHost, echoPort)
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeOpen, sid, 0, 601, openPayload); err != nil {
+		t.Fatalf("write open: %v", err)
+	}
+	resp, err := wire.ReadMuxResponse(clientConn)
+	if err != nil || resp.Status != wire.StatusOK || resp.RequestID != 601 {
+		t.Fatalf("open mismatch: resp=%+v err=%v", resp, err)
+	}
+
+	// Upload 100 bytes to echo server
+	uploadData := bytes.Repeat([]byte("M"), 100)
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeUpload, sid, 0, 602, uploadData); err != nil {
+		t.Fatalf("write upload: %v", err)
+	}
+	resp, err = wire.ReadMuxResponse(clientConn)
+	if err != nil || resp.Status != wire.StatusOK || resp.RequestID != 602 {
+		t.Fatalf("upload mismatch: resp=%+v err=%v", resp, err)
+	}
+
+	// Wait briefly for echo server to respond and streamSession to buffer 100 bytes
+	time.Sleep(30 * time.Millisecond)
+
+	// Request batch download with limit=50 and count=5.
+	// Buffer has 100 bytes, so records 0 and 1 will have data (50 bytes each),
+	// and record 2 will see an empty buffer and return StatusWait immediately!
+	// Records 3 and 4 must not block or be sent.
+	start := time.Now()
+	dlPayload := encodeDownloadPayload(0, 50, 5)
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeDownload, sid, 0, 603, dlPayload); err != nil {
+		t.Fatalf("write download: %v", err)
+	}
+
+	// 1st record: 50 bytes data
+	resp, err = wire.ReadMuxResponse(clientConn)
+	if err != nil || resp.Status != wire.StatusData || resp.RequestID != 603 {
+		t.Fatalf("record 0 expected StatusData: resp=%+v err=%v", resp, err)
+	}
+	if len(resp.Body) != 50 {
+		t.Fatalf("record 0 expected 50 bytes, got %d", len(resp.Body))
+	}
+
+	// 2nd record: 50 bytes data
+	resp, err = wire.ReadMuxResponse(clientConn)
+	if err != nil || resp.Status != wire.StatusData || resp.RequestID != 603 {
+		t.Fatalf("record 1 expected StatusData: resp=%+v err=%v", resp, err)
+	}
+	if len(resp.Body) != 50 {
+		t.Fatalf("record 1 expected 50 bytes, got %d", len(resp.Body))
+	}
+
+	// 3rd record: buffer empty -> returns StatusWait immediately
+	resp, err = wire.ReadMuxResponse(clientConn)
+	elapsed := time.Since(start)
+	if err != nil || resp.Status != wire.StatusWait || resp.RequestID != 603 {
+		t.Fatalf("record 2 expected StatusWait: resp=%+v err=%v", resp, err)
+	}
+
+	// The whole download batch should finish promptly without waiting 200ms long-poll for remaining records
+	if elapsed >= 150*time.Millisecond {
+		t.Fatalf("batch download took too long (%v), expected prompt completion (<150ms)", elapsed)
+	}
+
+	// Close session
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeClose, sid, 0, 604, nil); err != nil {
+		t.Fatalf("write close: %v", err)
+	}
+	resp, err = wire.ReadMuxResponse(clientConn)
+	if err != nil || resp.Status != wire.StatusOK || resp.RequestID != 604 {
+		t.Fatalf("close mismatch: resp=%+v err=%v", resp, err)
+	}
+}

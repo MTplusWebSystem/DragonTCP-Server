@@ -340,6 +340,7 @@ func main() {
 		udpgwInternalHost = flag.String("udpgw-internal-host", "dragontcp-udpgw.internal", "reserved SSH direct-tcpip target name for UDPGW")
 		udpgwMaxClients   = flag.Int("udpgw-max-clients", 10000, "maximum concurrent UDPGW TCP clients")
 		udpgwDebug        = flag.Bool("udpgw-debug", false, "verbose UDPGW errors")
+		adminAddr         = flag.String("admin-addr", "127.0.0.1:53080", "local HTTP administration and CLI endpoint; empty disables")
 	)
 	flag.Parse()
 
@@ -371,6 +372,7 @@ func main() {
 			debugEnabled:      debugEnabled,
 			debugChunks:       debugChunks,
 			debugStats:        debugStats,
+			adminAddr:         adminAddr,
 			sshEnable:         sshEnable,
 			sshListen:         sshListen,
 			sshInternalHost:   sshInternalHost,
@@ -429,9 +431,9 @@ func main() {
 		fmt.Printf("udpgw=true listen=%s internal_target=%s:%d max_clients=%d\n", udpServer.ln.Addr(), *udpgwInternalHost, udpPort, *udpgwMaxClients)
 	}
 
+	sshStore := newSSHUserStore(*sshCLI.usersPath)
 	var sshListener net.Listener
 	if *sshEnable {
-		sshStore := newSSHUserStore(*sshCLI.usersPath)
 		listener, fingerprint, err := startFakeSSH(*sshListen, *sshHostKey, sshStore, *allowPrivate, cache, *tcpBuffer)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fake SSH start failed: %v\n", err)
@@ -492,6 +494,46 @@ func main() {
 	manager := newStreamManager(*sessionTimeout, debug)
 	bhttpManager := newBHTTPSessionManager(*sessionTimeout, *maxConnections)
 	xorManager := newChunkManager(*sessionTimeout, debug)
+
+	targets := serverFlagTargets{
+		host:              host,
+		port:              port,
+		portAlt:           portAlt,
+		token:             token,
+		maxConnections:    maxConnections,
+		allowPrivate:      allowPrivate,
+		dnsCacheTTL:       dnsCacheTTL,
+		dnsCacheSize:      dnsCacheSize,
+		tcpBuffer:         tcpBuffer,
+		chunkMax:          chunkMax,
+		chunkBuffered:     chunkBuffered,
+		chunkPollWait:     chunkPollWait,
+		sessionTimeout:    sessionTimeout,
+		debugEnabled:      debugEnabled,
+		debugChunks:       debugChunks,
+		debugStats:        debugStats,
+		adminAddr:         adminAddr,
+		sshEnable:         sshEnable,
+		sshListen:         sshListen,
+		sshInternalHost:   sshInternalHost,
+		sshHostKey:        sshHostKey,
+		sshUsers:          sshCLI.usersPath,
+		udpgwEnable:       udpgwEnable,
+		udpgwListen:       udpgwListen,
+		udpgwInternalHost: udpgwInternalHost,
+		udpgwMaxClients:   udpgwMaxClients,
+		udpgwDebug:        udpgwDebug,
+	}
+	if *adminAddr != "" {
+		adminSrv, err := startAdminServer(*adminAddr, manager, sshStore, debug, targets)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: admin server start failed on %s: %v\n", *adminAddr, err)
+		} else if adminSrv != nil {
+			defer adminSrv.Close()
+			fmt.Printf("admin_server=true listen=%s\n", *adminAddr)
+		}
+	}
+
 	fmt.Printf("binary_transport=true bp_compat=true chunk_max=%d buffer_bytes=%d poll_wait=%s\n", *chunkMax, bufferBytes, chunkPollWait.String())
 	if debug.enabled {
 		fmt.Printf("debug=true debug_chunks=%t stats_interval=%s\n", debug.chunks, debug.statsEvery)
