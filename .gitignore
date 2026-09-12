@@ -2,3 +2,4 @@
 *.tmp
 dragontcp-users.json
 dragontcp_ssh_host_key*
+builds/*

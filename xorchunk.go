@@ -698,6 +698,37 @@ func sniffWire(conn net.Conn) (net.Conn, bool, byte, error) {
 	if _, err := io.ReadFull(conn, initial[:]); err != nil {
 		return conn, false, 0, err
 	}
+
+	// Check for HTTP payload request (GET, POST, CONNECT, HEAD, PUT, OPTIONS, etc.)
+	isHTTP := bytes.HasPrefix(initial[:], []byte("GET ")) ||
+		bytes.HasPrefix(initial[:], []byte("POST ")) ||
+		bytes.HasPrefix(initial[:], []byte("CONNECT ")) ||
+		bytes.HasPrefix(initial[:], []byte("HEAD ")) ||
+		bytes.HasPrefix(initial[:], []byte("PUT ")) ||
+		bytes.HasPrefix(initial[:], []byte("OPTIONS "))
+
+	if isHTTP {
+		br := bufio.NewReader(io.MultiReader(bytes.NewReader(initial[:]), conn))
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return conn, false, 0, err
+			}
+			if line == "\r\n" || line == "\n" || strings.TrimRight(line, "\r\n") == "" {
+				break
+			}
+		}
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nServer: DragonTCP\r\n\r\n"
+		if bytes.HasPrefix(initial[:], []byte("CONNECT ")) {
+			resp = "HTTP/1.1 200 Connection Established\r\nServer: DragonTCP\r\n\r\n"
+		}
+		if _, err := conn.Write([]byte(resp)); err != nil {
+			return conn, false, 0, err
+		}
+		wrapped := &prefixedConn{Conn: conn, r: br}
+		return sniffWire(wrapped)
+	}
+
 	if profile, ok := cover.DecodePreface(initial); ok {
 		if profile.Padding > 0 {
 			padding := make([]byte, int(profile.Padding))

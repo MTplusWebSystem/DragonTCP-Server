@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -631,3 +633,116 @@ func TestMuxDownloadBatchDrainsBufferImmediately(t *testing.T) {
 		t.Fatalf("close mismatch: resp=%+v err=%v", resp, err)
 	}
 }
+
+func TestHTTPPayloadHandshakeAndMuxV2(t *testing.T) {
+	echoLn, echoHost, echoPort := startEchoTarget(t)
+	defer echoLn.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	manager := newStreamManager(time.Minute, nil)
+	bhttpManager := newBHTTPSessionManager(time.Minute, 1000)
+	xorManager := newChunkManager(time.Minute, nil)
+	cache := newDNSCache(time.Minute, 1024)
+	slots := make(chan struct{}, 100)
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			slots <- struct{}{}
+			go handle(conn, "", true, cache, 0, slots, manager, bhttpManager, xorManager, 1048576, 4194304, 2097152, 200*time.Millisecond, nil)
+		}
+	}()
+
+	clientConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+
+	// 1. Send HTTP payload with simulated 4G zero-rated Host and WebSocket upgrade
+	httpReq := "GET / HTTP/1.1\r\nHost: portalrecarga.vivo.com.br\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+	if _, err := clientConn.Write([]byte(httpReq)); err != nil {
+		t.Fatalf("write http payload: %v", err)
+	}
+
+	// 2. Read HTTP 101 response
+	br := bufio.NewReader(clientConn)
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read status line: %v", err)
+	}
+	if !strings.Contains(statusLine, "101 Switching Protocols") {
+		t.Fatalf("expected 101 Switching Protocols, got: %s", statusLine)
+	}
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read header: %v", err)
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+
+	// 3. Now speak DragonTCP Mux v2 over the upgraded stream!
+	var sid wire.SessionID
+	copy(sid[:], []byte("http-payload-sess"))
+
+	// ModeOpen
+	openPayload := encodeOpenPayload("", echoHost, echoPort)
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeOpen, sid, 0, 701, openPayload); err != nil {
+		t.Fatalf("write open: %v", err)
+	}
+	resp, err := wire.ReadMuxResponse(br)
+	if err != nil || resp.Status != wire.StatusOK || resp.RequestID != 701 {
+		t.Fatalf("open mismatch: resp=%+v err=%v", resp, err)
+	}
+
+	// ModeUpload
+	uploadData := []byte("hello through http payload upgraded tunnel")
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeUpload, sid, 0, 702, uploadData); err != nil {
+		t.Fatalf("write upload: %v", err)
+	}
+	resp, err = wire.ReadMuxResponse(br)
+	if err != nil || resp.Status != wire.StatusOK || resp.RequestID != 702 {
+		t.Fatalf("upload mismatch: resp=%+v err=%v", resp, err)
+	}
+
+	// ModeDownload
+	dlPayload := encodeDownloadPayload(0, 1024, 1)
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeDownload, sid, 0, 703, dlPayload); err != nil {
+		t.Fatalf("write download: %v", err)
+	}
+	resp, err = wire.ReadMuxResponse(br)
+	if err != nil || resp.Status != wire.StatusData || resp.RequestID != 703 {
+		t.Fatalf("download mismatch: resp=%+v err=%v", resp, err)
+	}
+	decoded := wire.DecodeMaskedResponse(resp.Status, resp.Body, sid, wire.ModeDownload, 0)
+	if !bytes.Equal(decoded, uploadData) {
+		t.Fatalf("echo body mismatch: got %q, want %q", decoded, uploadData)
+	}
+
+	// Read StatusWait ending the download request
+	resp, err = wire.ReadMuxResponse(br)
+	if err != nil || resp.Status != wire.StatusWait || resp.RequestID != 703 {
+		t.Fatalf("wait mismatch: resp=%+v err=%v", resp, err)
+	}
+
+	// ModeClose
+	if err := wire.WriteMuxRequest(clientConn, wire.ModeClose, sid, 0, 704, nil); err != nil {
+		t.Fatalf("write close: %v", err)
+	}
+	resp, err = wire.ReadMuxResponse(br)
+	if err != nil || resp.Status != wire.StatusOK || resp.RequestID != 704 {
+		t.Fatalf("close mismatch: resp=%+v err=%v", resp, err)
+	}
+}
+
