@@ -7,8 +7,10 @@ package main
 // except the target dialler, DNS cache, token check and debug counters.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +21,7 @@ import (
 
 	"dragontcp/internal/cover"
 	"dragontcp/internal/protocol"
+	"dragontcp/internal/wire"
 )
 
 type chunkSession struct {
@@ -601,12 +604,91 @@ type prefixedConn struct {
 	r          io.Reader
 	headerMask byte
 	cover      cover.Profile
+	muxV2      bool
 }
 
 func (p *prefixedConn) Read(b []byte) (int, error)  { return p.r.Read(b) }
 func (p *prefixedConn) HeaderMask() byte            { return p.headerMask }
 func (p *prefixedConn) CoverProfile() cover.Profile { return p.cover }
 func (p *prefixedConn) ClearPayload() bool          { return p.cover.Clear }
+func (p *prefixedConn) MuxV2() bool                 { return p.muxV2 || p.cover.MuxV2 }
+
+func detectDirectMuxV2(r *bufio.Reader, mask byte) bool {
+	b29, err := r.Peek(29)
+	if err != nil {
+		return false
+	}
+	mode := b29[0] ^ mask
+	var sid wire.SessionID
+	copy(sid[:], b29[1:17])
+	seq := binary.BigEndian.Uint64(b29[17:25])
+
+	switch mode {
+	case wire.ModeProbe:
+		b33, _ := r.Peek(33)
+		if len(b33) >= 33 {
+			candidateV1 := make([]byte, 4)
+			copy(candidateV1, b33[29:33])
+			wire.MaskInPlace(candidateV1, sid, mode, seq, false)
+			if bytes.Equal(candidateV1, wire.ProbeMagic[:]) || bytes.Equal(b33[29:33], wire.ProbeMagic[:]) {
+				return false
+			}
+			return true
+		}
+
+	case wire.ModeOpen:
+		b39, _ := r.Peek(39)
+		if len(b39) >= 39 {
+			len1 := binary.BigEndian.Uint32(b39[25:29])
+			p1 := make([]byte, 6)
+			copy(p1, b39[29:35])
+			wire.MaskInPlace(p1, sid, mode, seq, false)
+			tl1 := binary.BigEndian.Uint16(p1[0:2])
+			hl1 := binary.BigEndian.Uint16(p1[2:4])
+			port1 := binary.BigEndian.Uint16(p1[4:6])
+			if port1 >= 1 && 6+tl1+hl1 == uint16(len1) {
+				return false
+			}
+			tl1c := binary.BigEndian.Uint16(b39[29:31])
+			hl1c := binary.BigEndian.Uint16(b39[31:33])
+			port1c := binary.BigEndian.Uint16(b39[33:35])
+			if port1c >= 1 && 6+tl1c+hl1c == uint16(len1) {
+				return false
+			}
+
+			len2 := binary.BigEndian.Uint32(b39[29:33])
+			p2 := make([]byte, 6)
+			copy(p2, b39[33:39])
+			wire.MaskInPlace(p2, sid, mode, seq, false)
+			tl2 := binary.BigEndian.Uint16(p2[0:2])
+			hl2 := binary.BigEndian.Uint16(p2[2:4])
+			port2 := binary.BigEndian.Uint16(p2[4:6])
+			if port2 >= 1 && 6+tl2+hl2 == uint16(len2) {
+				return true
+			}
+			tl2c := binary.BigEndian.Uint16(b39[33:35])
+			hl2c := binary.BigEndian.Uint16(b39[35:37])
+			port2c := binary.BigEndian.Uint16(b39[37:39])
+			if port2c >= 1 && 6+tl2c+hl2c == uint16(len2) {
+				return true
+			}
+		}
+
+	case wire.ModeDownload:
+		len1 := binary.BigEndian.Uint32(b29[25:29])
+		b33, _ := r.Peek(33)
+		if len(b33) >= 33 {
+			len2 := binary.BigEndian.Uint32(b33[29:33])
+			if len1 == 14 && len2 != 14 {
+				return false
+			}
+			if len2 == 14 && len1 != 14 {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // sniffWire first checks for the optional self-describing cover preface. If it
 // is absent, the bytes are replayed and the legacy/direct B/X classifier is
@@ -623,18 +705,18 @@ func sniffWire(conn net.Conn) (net.Conn, bool, byte, error) {
 				return conn, false, 0, err
 			}
 		}
-		profiled := &prefixedConn{Conn: conn, r: conn, headerMask: profile.HeaderMask, cover: profile}
+		profiled := &prefixedConn{Conn: conn, r: conn, headerMask: profile.HeaderMask, cover: profile, muxV2: profile.MuxV2}
 		return profiled, profile.XOR, profile.HeaderMask, nil
 	}
 
 	magic := initial[:2]
-	replay := io.MultiReader(bytes.NewReader(initial[:]), conn)
 
 	if magic[0]&7 >= 5 {
 		mask := magic[0] ^ 'U'
 		if magic[1]^mask != 'P' {
 			return conn, false, 0, fmt.Errorf("unknown wire header")
 		}
+		replay := io.MultiReader(bytes.NewReader(initial[:]), conn)
 		replayed := &prefixedConn{Conn: conn, r: replay, headerMask: mask}
 		return replayed, true, mask, nil
 	}
@@ -644,7 +726,10 @@ func sniffWire(conn net.Conn) (net.Conn, bool, byte, error) {
 	if mode > 4 {
 		return conn, false, 0, fmt.Errorf("unknown binary mode")
 	}
-	replayed := &prefixedConn{Conn: conn, r: replay, headerMask: mask}
+
+	reader := bufio.NewReader(io.MultiReader(bytes.NewReader(initial[:]), conn))
+	isMux := detectDirectMuxV2(reader, mask)
+	replayed := &prefixedConn{Conn: conn, r: reader, headerMask: mask, muxV2: isMux}
 	return replayed, false, mask, nil
 }
 

@@ -10,9 +10,11 @@ import (
 )
 
 const (
-	RequestHeaderSize  = 29
-	ResponseHeaderSize = 5
-	MaxPayload         = 2 * 1024 * 1024
+	RequestHeaderSize     = 29
+	ResponseHeaderSize    = 5
+	MuxRequestHeaderSize  = 33
+	MuxResponseHeaderSize = 9
+	MaxPayload            = 2 * 1024 * 1024
 
 	ModeProbe    byte = 0
 	ModeOpen     byte = 1
@@ -52,6 +54,20 @@ type Request struct {
 	Session SessionID
 	Seq     uint64
 	Payload []byte
+}
+
+type MuxRequest struct {
+	Mode      byte
+	Session   SessionID
+	Seq       uint64
+	RequestID uint32
+	Payload   []byte
+}
+
+type MuxResponse struct {
+	Status    byte
+	RequestID uint32
+	Body      []byte
 }
 
 func MaskInPlace(data []byte, sid SessionID, mode byte, seq uint64, response bool) {
@@ -269,4 +285,152 @@ func writerClearPayload(w io.Writer) bool {
 		return profiled.ClearPayload()
 	}
 	return false
+}
+
+func WriteMuxRequest(w io.Writer, mode byte, sid SessionID, seq uint64, reqID uint32, plaintext []byte) error {
+	return WriteMuxRequestProfile(w, mode, sid, seq, reqID, plaintext, 0)
+}
+
+func WriteMuxRequestProfile(w io.Writer, mode byte, sid SessionID, seq uint64, reqID uint32, plaintext []byte, headerMask byte) error {
+	return WriteMuxRequestProfileEncoding(w, mode, sid, seq, reqID, plaintext, headerMask, false)
+}
+
+func WriteMuxRequestProfileEncoding(w io.Writer, mode byte, sid SessionID, seq uint64, reqID uint32, plaintext []byte, headerMask byte, clear bool) error {
+	if len(plaintext) > MaxPayload {
+		return fmt.Errorf("request payload too large: %d", len(plaintext))
+	}
+	if clear {
+		var header [MuxRequestHeaderSize]byte
+		header[0] = mode ^ headerMask
+		copy(header[1:17], sid[:])
+		binary.BigEndian.PutUint64(header[17:25], seq)
+		binary.BigEndian.PutUint32(header[25:29], reqID)
+		binary.BigEndian.PutUint32(header[29:33], uint32(len(plaintext)))
+		buffers := net.Buffers{header[:], plaintext}
+		_, err := buffers.WriteTo(w)
+		return err
+	}
+
+	packet := make([]byte, MuxRequestHeaderSize+len(plaintext))
+	packet[0] = mode ^ headerMask
+	copy(packet[1:17], sid[:])
+	binary.BigEndian.PutUint64(packet[17:25], seq)
+	binary.BigEndian.PutUint32(packet[25:29], reqID)
+	binary.BigEndian.PutUint32(packet[29:33], uint32(len(plaintext)))
+	copy(packet[33:], plaintext)
+	MaskInPlace(packet[33:], sid, mode, seq, false)
+	return writeAll(w, packet)
+}
+
+func ReadMuxRequest(r io.Reader) (MuxRequest, error) {
+	return ReadMuxRequestProfile(r, 0)
+}
+
+func ReadMuxRequestProfile(r io.Reader, headerMask byte) (MuxRequest, error) {
+	return ReadMuxRequestProfileEncoding(r, headerMask, false)
+}
+
+func ReadMuxRequestProfileEncoding(r io.Reader, headerMask byte, clear bool) (MuxRequest, error) {
+	var req MuxRequest
+	var header [MuxRequestHeaderSize]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return req, err
+	}
+
+	req.Mode = header[0] ^ headerMask
+	if req.Mode > ModeClose {
+		return req, errors.New("unknown request mode")
+	}
+	copy(req.Session[:], header[1:17])
+	req.Seq = binary.BigEndian.Uint64(header[17:25])
+	req.RequestID = binary.BigEndian.Uint32(header[25:29])
+	n := binary.BigEndian.Uint32(header[29:33])
+	if n > MaxPayload {
+		return req, errors.New("request payload too large")
+	}
+
+	if n > 0 {
+		req.Payload = make([]byte, int(n))
+		if _, err := io.ReadFull(r, req.Payload); err != nil {
+			return req, err
+		}
+		if !clear {
+			MaskInPlace(req.Payload, req.Session, req.Mode, req.Seq, false)
+		}
+	}
+	return req, nil
+}
+
+func WriteMuxResponse(w io.Writer, status byte, reqID uint32, body []byte) error {
+	return WriteMuxResponseProfile(w, status, reqID, body, writerHeaderMask(w))
+}
+
+func WriteMuxResponseProfile(w io.Writer, status byte, reqID uint32, body []byte, headerMask byte) error {
+	if len(body) > MaxPayload {
+		return fmt.Errorf("response body too large: %d", len(body))
+	}
+	packet := make([]byte, MuxResponseHeaderSize+len(body))
+	packet[0] = status ^ headerMask
+	binary.BigEndian.PutUint32(packet[1:5], reqID)
+	binary.BigEndian.PutUint32(packet[5:9], uint32(len(body)))
+	copy(packet[9:], body)
+	return writeAll(w, packet)
+}
+
+func WriteMaskedMuxResponse(w io.Writer, status byte, reqID uint32, body []byte, sid SessionID, mode byte, seq uint64) error {
+	return WriteMaskedMuxResponseProfileEncoding(w, status, reqID, body, sid, mode, seq, writerHeaderMask(w), writerClearPayload(w))
+}
+
+func WriteMaskedMuxResponseProfile(w io.Writer, status byte, reqID uint32, body []byte, sid SessionID, mode byte, seq uint64, headerMask byte) error {
+	return WriteMaskedMuxResponseProfileEncoding(w, status, reqID, body, sid, mode, seq, headerMask, false)
+}
+
+func WriteMaskedMuxResponseProfileEncoding(w io.Writer, status byte, reqID uint32, body []byte, sid SessionID, mode byte, seq uint64, headerMask byte, clear bool) error {
+	if len(body) > MaxPayload {
+		return fmt.Errorf("response body too large: %d", len(body))
+	}
+	if clear {
+		var header [MuxResponseHeaderSize]byte
+		header[0] = status ^ headerMask
+		binary.BigEndian.PutUint32(header[1:5], reqID)
+		binary.BigEndian.PutUint32(header[5:9], uint32(len(body)))
+		buffers := net.Buffers{header[:], body}
+		_, err := buffers.WriteTo(w)
+		return err
+	}
+	packet := make([]byte, MuxResponseHeaderSize+len(body))
+	packet[0] = status ^ headerMask
+	binary.BigEndian.PutUint32(packet[1:5], reqID)
+	binary.BigEndian.PutUint32(packet[5:9], uint32(len(body)))
+	copy(packet[9:], body)
+	MaskInPlace(packet[9:], sid, mode, seq, true)
+	return writeAll(w, packet)
+}
+
+func ReadMuxResponse(r io.Reader) (MuxResponse, error) {
+	return ReadMuxResponseProfile(r, 0)
+}
+
+func ReadMuxResponseProfile(r io.Reader, headerMask byte) (MuxResponse, error) {
+	var resp MuxResponse
+	var header [MuxResponseHeaderSize]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return resp, err
+	}
+	resp.Status = header[0] ^ headerMask
+	if resp.Status > StatusEOF {
+		return resp, errors.New("unknown response status")
+	}
+	resp.RequestID = binary.BigEndian.Uint32(header[1:5])
+	n := binary.BigEndian.Uint32(header[5:9])
+	if n > MaxPayload {
+		return resp, errors.New("response body too large")
+	}
+	if n > 0 {
+		resp.Body = make([]byte, int(n))
+		if _, err := io.ReadFull(r, resp.Body); err != nil {
+			return resp, err
+		}
+	}
+	return resp, nil
 }
