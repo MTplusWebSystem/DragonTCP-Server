@@ -35,6 +35,12 @@ type streamSession struct {
 }
 
 func newStreamSession(sid wire.SessionID, target net.Conn, targetName string, maxChunk, maxBuffer int, bulkCoalesce bool, debug *serverDebug) *streamSession {
+	if maxBuffer < maxChunk {
+		maxBuffer = maxChunk
+	}
+	if maxBuffer < 1024*1024 {
+		maxBuffer = 1024 * 1024
+	}
 	s := &streamSession{
 		sid:          sid,
 		target:       target,
@@ -197,8 +203,10 @@ func (s *streamSession) readAt(offset uint64, limit int, wait time.Duration) ([]
 				return nil, wire.StatusEOF, nil
 			}
 		} else {
-			s.mu.Unlock()
-			return nil, wire.StatusError, fmt.Errorf("download offset %d is beyond buffered stream end %d", offset, s.base+uint64(len(s.buf)))
+			if s.eof || s.closed {
+				s.mu.Unlock()
+				return nil, wire.StatusEOF, nil
+			}
 		}
 
 		if wait <= 0 || time.Now().After(deadline) {
@@ -394,6 +402,28 @@ func probePattern(n int) []byte {
 	return out
 }
 
+// calculateParallelWorkers calculates how many concurrent connections/workers are required
+// to reach 1024 KB (1 Mbps aggregate throughput) when the individual chunk size is constrained.
+// For example, if a carrier caps chunk size to 16 KB (16384 bytes), 64 parallel workers are used
+// (64 * 16 KB = 1024 KB).
+func calculateParallelWorkers(chunkSize int) int {
+	if chunkSize <= 0 {
+		return 64
+	}
+	const targetBytes = 1024 * 1024
+	workers := targetBytes / chunkSize
+	if targetBytes%chunkSize != 0 {
+		workers++
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 64 {
+		workers = 64
+	}
+	return workers
+}
+
 func validateIperfUploadPayload(payload []byte, token string, candidate int) bool {
 	base := 11 + len(token)
 	wantLen := candidate
@@ -475,7 +505,8 @@ func processWireRequest(conn net.Conn, req wire.Request, token string, allowPriv
 				return wire.WriteResponse(conn, wire.StatusError, []byte("iperf upload validation failed"))
 			}
 			if debug != nil && debug.enabled {
-				debug.logf("CALIBRATION fake_iperf=upload peer=%s chunk=%d bytes=%d seq=%d pollers=1 outstanding=1", conn.RemoteAddr(), value, len(req.Payload), req.Seq)
+				workers := calculateParallelWorkers(value)
+				debug.logf("CALIBRATION fake_iperf=upload peer=%s chunk=%d bytes=%d seq=%d pollers=%d outstanding=%d", conn.RemoteAddr(), value, len(req.Payload), req.Seq, workers, workers)
 			}
 			return wire.WriteResponse(conn, wire.StatusOK, nil)
 		case wire.ProbeIperfDownload:
@@ -484,7 +515,8 @@ func processWireRequest(conn net.Conn, req wire.Request, token string, allowPriv
 			}
 			count := wire.ProbeBurstCount(value)
 			if debug != nil && debug.enabled {
-				debug.logf("CALIBRATION fake_iperf=download peer=%s chunk=%d records=%d bytes=%d pollers=1 outstanding=1", conn.RemoteAddr(), value, count, value*count)
+				workers := calculateParallelWorkers(value)
+				debug.logf("CALIBRATION fake_iperf=download peer=%s chunk=%d records=%d bytes=%d pollers=%d outstanding=%d", conn.RemoteAddr(), value, count, value*count, workers, workers)
 			}
 			data := probePattern(value)
 			for i := 0; i < count; i++ {

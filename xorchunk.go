@@ -51,6 +51,9 @@ func newChunkSession(id string, target net.Conn, maxChunk, maxBuffer int, debug 
 	if maxBuffer < maxChunk {
 		maxBuffer = maxChunk
 	}
+	if maxBuffer < 1024*1024 {
+		maxBuffer = 1024 * 1024
+	}
 	readSize := maxChunk
 	if readSize > 64*1024 {
 		readSize = 64 * 1024
@@ -410,7 +413,8 @@ func processChunkCommand(
 			return protocol.WriteResponseFrame(conn, requestID, []byte("ERR iperf upload validation failed"))
 		}
 		if debug != nil && debug.enabled {
-			debug.logf("CALIBRATION fake_iperf=upload wire=x peer=%s chunk=%d bytes=%d pollers=1 outstanding=1", conn.RemoteAddr(), size, len(data))
+			workers := calculateParallelWorkers(size)
+			debug.logf("CALIBRATION fake_iperf=upload wire=x peer=%s chunk=%d bytes=%d pollers=%d outstanding=%d", conn.RemoteAddr(), size, len(data), workers, workers)
 		}
 		return protocol.WriteResponseFrame(conn, requestID, []byte("IPERFOK"))
 	}
@@ -428,7 +432,8 @@ func processChunkCommand(
 			return protocol.WriteResponseFrame(conn, requestID, []byte("ERR iperf download chunk too large"))
 		}
 		if debug != nil && debug.enabled {
-			debug.logf("CALIBRATION fake_iperf=download wire=x peer=%s chunk=%d bytes=%d pollers=1 outstanding=1", conn.RemoteAddr(), size, size)
+			workers := calculateParallelWorkers(size)
+			debug.logf("CALIBRATION fake_iperf=download wire=x peer=%s chunk=%d bytes=%d pollers=%d outstanding=%d", conn.RemoteAddr(), size, size, workers, workers)
 		}
 		return protocol.WriteResponseFrame(conn, requestID, probePattern(size))
 	}

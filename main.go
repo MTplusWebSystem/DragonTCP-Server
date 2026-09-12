@@ -339,6 +339,9 @@ func main() {
 		udpgwListen       = flag.String("udpgw-listen", "127.0.0.1:7400", "UDPGW listen address; loopback is recommended")
 		udpgwInternalHost = flag.String("udpgw-internal-host", "dragontcp-udpgw.internal", "reserved SSH direct-tcpip target name for UDPGW")
 		udpgwMaxClients   = flag.Int("udpgw-max-clients", 10000, "maximum concurrent UDPGW TCP clients")
+		udpgwMode         = flag.String("udpgw-mode", "native", "UDP discharge mode: 'native' (Linux ABI direct NIC discharge), 'tun' (/dev/net/tun), or 'standard' (user-space udpgw)")
+		udpgwInterface    = flag.String("udpgw-interface", "auto", "network interface for native ABI discharge (e.g. eth0, ens3, or 'auto')")
+		udpgwBusyPoll     = flag.Int("udpgw-busy-poll", 50, "SO_BUSY_POLL in microseconds for low-latency native ABI (0 disables)")
 		udpgwDebug        = flag.Bool("udpgw-debug", false, "verbose UDPGW errors")
 		adminAddr         = flag.String("admin-addr", "127.0.0.1:53080", "local HTTP administration and CLI endpoint; empty disables")
 	)
@@ -382,6 +385,9 @@ func main() {
 			udpgwListen:       udpgwListen,
 			udpgwInternalHost: udpgwInternalHost,
 			udpgwMaxClients:   udpgwMaxClients,
+			udpgwMode:         udpgwMode,
+			udpgwInterface:    udpgwInterface,
+			udpgwBusyPoll:     udpgwBusyPoll,
 			udpgwDebug:        udpgwDebug,
 		})
 		fmt.Printf("config=%s\n", *configFile)
@@ -410,7 +416,12 @@ func main() {
 	if *udpgwEnable {
 		var err error
 		udpServer, err = startUDPGWServer(udpgwServerConfig{
-			Listen: *udpgwListen, MaxClients: *udpgwMaxClients, Debug: *udpgwDebug,
+			Listen:     *udpgwListen,
+			MaxClients: *udpgwMaxClients,
+			Mode:       *udpgwMode,
+			Interface:  *udpgwInterface,
+			BusyPollUS: *udpgwBusyPoll,
+			Debug:      *udpgwDebug,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "UDPGW start failed: %v\n", err)
@@ -428,7 +439,7 @@ func main() {
 			os.Exit(2)
 		}
 		registerSSHOnlyInternalTarget(*udpgwInternalHost, udpPort, udpServer.ln.Addr().String())
-		fmt.Printf("udpgw=true listen=%s internal_target=%s:%d max_clients=%d\n", udpServer.ln.Addr(), *udpgwInternalHost, udpPort, *udpgwMaxClients)
+		fmt.Printf("udpgw=true mode=%s interface=%s listen=%s internal_target=%s:%d max_clients=%d\n", udpServer.cfg.Mode, udpServer.cfg.Interface, udpServer.ln.Addr(), *udpgwInternalHost, udpPort, *udpgwMaxClients)
 	}
 
 	sshStore := newSSHUserStore(*sshCLI.usersPath)

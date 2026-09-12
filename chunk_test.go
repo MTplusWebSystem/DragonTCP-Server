@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -477,4 +479,236 @@ func TestStreamSessionBatchDownloadDrainsWithoutWait(t *testing.T) {
 	if drainElapsed > 10*time.Millisecond {
 		t.Fatalf("subsequent record waited %v, expected immediate return (<10ms)", drainElapsed)
 	}
+}
+
+func TestCalculateParallelWorkers(t *testing.T) {
+	tests := []struct {
+		chunkSize int
+		want      int
+	}{
+		{chunkSize: 16 * 1024, want: 64},
+		{chunkSize: 32 * 1024, want: 32},
+		{chunkSize: 64 * 1024, want: 16},
+		{chunkSize: 128 * 1024, want: 8},
+		{chunkSize: 256 * 1024, want: 4},
+		{chunkSize: 512 * 1024, want: 2},
+		{chunkSize: 1024 * 1024, want: 1},
+		{chunkSize: 0, want: 64},
+		{chunkSize: -100, want: 64},
+		{chunkSize: 8 * 1024, want: 64},        // capped at 64
+		{chunkSize: 2 * 1024 * 1024, want: 1}, // capped at 1
+	}
+
+	for _, tt := range tests {
+		got := calculateParallelWorkers(tt.chunkSize)
+		if got != tt.want {
+			t.Errorf("calculateParallelWorkers(%d) = %d, want %d", tt.chunkSize, got, tt.want)
+		}
+	}
+}
+
+func makeTestProbePayload(kind byte, value, size int, token string) []byte {
+	if size < 11+len(token) {
+		size = 11 + len(token)
+	}
+	p := make([]byte, size)
+	copy(p[:4], wire.ProbeMagic[:])
+	p[4] = kind
+	binary.BigEndian.PutUint16(p[5:7], uint16(len(token)))
+	binary.BigEndian.PutUint32(p[7:11], uint32(value))
+	copy(p[11:], token)
+	start := 11 + len(token)
+	for i := start; i < len(p); i++ {
+		p[i] = byte((i*31 + 17) & 0xff)
+	}
+	return p
+}
+
+func TestProbeIperfSustainedParallel(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	stopServer := make(chan struct{})
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				for {
+					_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+					req, err := wire.ReadRequest(c)
+					if err != nil {
+						return
+					}
+					if err := processWireRequest(c, req, "", false, nil, 0, nil, 1024*1024, 2*1024*1024, 10*time.Millisecond, nil); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+	defer close(stopServer)
+
+	const (
+		chunkSize = 16 * 1024
+		duration  = 100 * time.Millisecond
+	)
+	workers := calculateParallelWorkers(chunkSize)
+	if workers != 64 {
+		t.Fatalf("expected 64 workers for %d chunk size, got %d", chunkSize, workers)
+	}
+
+	started := time.Now()
+	deadline := started.Add(duration)
+
+	var totalBytes atomic.Int64
+	var totalErrors atomic.Int64
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			c, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				totalErrors.Add(1)
+				return
+			}
+			defer c.Close()
+
+			var sid wire.SessionID
+			binary.BigEndian.PutUint64(sid[0:8], uint64(workerID+1))
+			seq := uint64(0)
+
+			for time.Now().Before(deadline) {
+				_ = c.SetDeadline(time.Now().Add(time.Second))
+				// 1. Upload probe
+				payload := makeTestProbePayload(wire.ProbeIperfUpload, chunkSize, chunkSize, "")
+				seq++
+				if err := wire.WriteRequest(c, wire.ModeProbe, sid, seq, payload); err != nil {
+					totalErrors.Add(1)
+					return
+				}
+				status, _, err := wire.ReadResponse(c)
+				if err != nil || status != wire.StatusOK {
+					totalErrors.Add(1)
+					return
+				}
+				totalBytes.Add(int64(chunkSize))
+
+				// 2. Download probe
+				reqDl := makeTestProbePayload(wire.ProbeIperfDownload, chunkSize, 11, "")
+				seq++
+				if err := wire.WriteRequest(c, wire.ModeProbe, sid, seq, reqDl); err != nil {
+					totalErrors.Add(1)
+					return
+				}
+				burst := wire.ProbeBurstCount(chunkSize)
+				for b := 0; b < burst; b++ {
+					st, body, err := wire.ReadResponse(c)
+					if err != nil || st != wire.StatusData {
+						totalErrors.Add(1)
+						return
+					}
+					decoded := wire.DecodeMaskedResponse(st, body, sid, wire.ModeProbe, seq+uint64(b))
+					if len(decoded) != chunkSize {
+						totalErrors.Add(1)
+						return
+					}
+					totalBytes.Add(int64(len(decoded)))
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	if totalErrors.Load() > 0 {
+		t.Fatalf("sustained parallel probe encountered %d errors across 64 workers", totalErrors.Load())
+	}
+	if totalBytes.Load() < int64(workers*chunkSize) {
+		t.Fatalf("expected total bytes >= %d, got %d", workers*chunkSize, totalBytes.Load())
+	}
+}
+
+func TestServerMultiPollerSession(t *testing.T) {
+	clientConn, targetConn := net.Pipe()
+	defer clientConn.Close()
+
+	var sid wire.SessionID
+	s := newStreamSession(sid, clientConn, "target:80", 64*1024, 2*1024*1024, false, nil)
+	defer s.close()
+
+	const (
+		numWorkers = 64
+		chunkSize  = 16 * 1024
+		totalBytes = numWorkers * chunkSize
+	)
+
+	// Target writes 1024 KB in chunks asynchronously
+	go func() {
+		defer targetConn.Close()
+		buf := make([]byte, chunkSize)
+		for i := 0; i < numWorkers; i++ {
+			for j := range buf {
+				buf[j] = byte((i + j) & 0xff)
+			}
+			_, _ = targetConn.Write(buf)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	var errors atomic.Int64
+
+	// Spawn 64 parallel pollers reading ahead concurrently
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			offset := uint64(workerID * chunkSize)
+			data, status, err := s.readAt(offset, chunkSize, 2*time.Second)
+			if err != nil {
+				errors.Add(1)
+				t.Errorf("worker %d readAt offset %d error: %v", workerID, offset, err)
+				return
+			}
+			if status != wire.StatusData {
+				errors.Add(1)
+				t.Errorf("worker %d readAt offset %d status=%d, want StatusData", workerID, offset, status)
+				return
+			}
+			if len(data) != chunkSize {
+				errors.Add(1)
+				t.Errorf("worker %d readAt offset %d len=%d, want %d", workerID, offset, len(data), chunkSize)
+				return
+			}
+			// Verify content
+			for j := 0; j < chunkSize; j++ {
+				if data[j] != byte((workerID+j)&0xff) {
+					errors.Add(1)
+					t.Errorf("worker %d byte %d mismatch: got %x want %x", workerID, j, data[j], byte((workerID+j)&0xff))
+					return
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	if errors.Load() > 0 {
+		t.Fatalf("encountered %d errors in multi-poller session test", errors.Load())
+	}
+
+	// Verify ACK drops base cleanly
+	s.ack(uint64(totalBytes))
+	s.mu.Lock()
+	if s.base != uint64(totalBytes) {
+		t.Fatalf("expected base=%d after full ack, got %d", totalBytes, s.base)
+	}
+	s.mu.Unlock()
 }

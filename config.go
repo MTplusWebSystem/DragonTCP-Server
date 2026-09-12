@@ -19,11 +19,16 @@ type SSHConfig struct {
 
 // UDPGWConfig defines the configuration for the BadVPN-compatible UDPGW service.
 type UDPGWConfig struct {
-	Enable       bool   `yaml:"enable"`
-	Listen       string `yaml:"listen"`
-	InternalHost string `yaml:"internal_host"`
-	MaxClients   int    `yaml:"max_clients"`
-	Debug        bool   `yaml:"debug"`
+	Enable            bool   `yaml:"enable"`
+	Listen            string `yaml:"listen"`
+	InternalHost      string `yaml:"internal_host"`
+	InternalHostKebab string `yaml:"internal-host,omitempty"`
+	MaxClients        int    `yaml:"max_clients"`
+	MaxClientsKebab   int    `yaml:"max-clients,omitempty"`
+	Mode              string `yaml:"mode"`      // "native" (Descarga ABI Linux), "tun" (Dispositivo TUN), "standard" (UDPGW Padrão)
+	Interface         string `yaml:"interface"` // "auto" or physical network card like "eth0"
+	BusyPollUS        int    `yaml:"busy_poll"` // SO_BUSY_POLL in microseconds (default: 50)
+	Debug             bool   `yaml:"debug"`
 }
 
 // ServerConfig defines the full configuration for the DragonTCP server.
@@ -84,6 +89,9 @@ func DefaultConfig() ServerConfig {
 			Listen:       "127.0.0.1:7400",
 			InternalHost: "dragontcp-udpgw.internal",
 			MaxClients:   10000,
+			Mode:         "native",
+			Interface:    "auto",
+			BusyPollUS:   50,
 			Debug:        false,
 		},
 	}
@@ -106,6 +114,10 @@ type rawUDPGWConfig struct {
 	InternalHostKebab *string `yaml:"internal-host"`
 	MaxClients        *int    `yaml:"max_clients"`
 	MaxClientsKebab   *int    `yaml:"max-clients"`
+	Mode              *string `yaml:"mode"`
+	Interface         *string `yaml:"interface"`
+	BusyPollUS        *int    `yaml:"busy_poll"`
+	BusyPollUSKebab   *int    `yaml:"busy-poll"`
 	Debug             *bool   `yaml:"debug"`
 }
 
@@ -162,6 +174,12 @@ type rawServerConfig struct {
 	UDPGWInternalHostFlatKebab *string         `yaml:"udpgw-internal-host"`
 	UDPGWMaxClientsFlat        *int            `yaml:"udpgw_max_clients"`
 	UDPGWMaxClientsFlatKebab   *int            `yaml:"udpgw-max-clients"`
+	UDPGWModeFlat              *string         `yaml:"udpgw_mode"`
+	UDPGWModeFlatKebab         *string         `yaml:"udpgw-mode"`
+	UDPGWInterfaceFlat         *string         `yaml:"udpgw_interface"`
+	UDPGWInterfaceFlatKebab    *string         `yaml:"udpgw-interface"`
+	UDPGWBusyPollFlat          *int            `yaml:"udpgw_busy_poll"`
+	UDPGWBusyPollFlatKebab     *int            `yaml:"udpgw-busy-poll"`
 	UDPGWDebugFlat             *bool           `yaml:"udpgw_debug"`
 	UDPGWDebugFlatKebab        *bool           `yaml:"udpgw-debug"`
 }
@@ -329,6 +347,17 @@ func LoadConfigBytes(data []byte) (*ServerConfig, error) {
 		} else if raw.UDPGW.MaxClientsKebab != nil {
 			cfg.UDPGW.MaxClients = *raw.UDPGW.MaxClientsKebab
 		}
+		if raw.UDPGW.Mode != nil {
+			cfg.UDPGW.Mode = *raw.UDPGW.Mode
+		}
+		if raw.UDPGW.Interface != nil {
+			cfg.UDPGW.Interface = *raw.UDPGW.Interface
+		}
+		if raw.UDPGW.BusyPollUS != nil {
+			cfg.UDPGW.BusyPollUS = *raw.UDPGW.BusyPollUS
+		} else if raw.UDPGW.BusyPollUSKebab != nil {
+			cfg.UDPGW.BusyPollUS = *raw.UDPGW.BusyPollUSKebab
+		}
 		if raw.UDPGW.Debug != nil {
 			cfg.UDPGW.Debug = *raw.UDPGW.Debug
 		}
@@ -352,6 +381,21 @@ func LoadConfigBytes(data []byte) (*ServerConfig, error) {
 		cfg.UDPGW.MaxClients = *raw.UDPGWMaxClientsFlat
 	} else if raw.UDPGWMaxClientsFlatKebab != nil {
 		cfg.UDPGW.MaxClients = *raw.UDPGWMaxClientsFlatKebab
+	}
+	if raw.UDPGWModeFlat != nil {
+		cfg.UDPGW.Mode = *raw.UDPGWModeFlat
+	} else if raw.UDPGWModeFlatKebab != nil {
+		cfg.UDPGW.Mode = *raw.UDPGWModeFlatKebab
+	}
+	if raw.UDPGWInterfaceFlat != nil {
+		cfg.UDPGW.Interface = *raw.UDPGWInterfaceFlat
+	} else if raw.UDPGWInterfaceFlatKebab != nil {
+		cfg.UDPGW.Interface = *raw.UDPGWInterfaceFlatKebab
+	}
+	if raw.UDPGWBusyPollFlat != nil {
+		cfg.UDPGW.BusyPollUS = *raw.UDPGWBusyPollFlat
+	} else if raw.UDPGWBusyPollFlatKebab != nil {
+		cfg.UDPGW.BusyPollUS = *raw.UDPGWBusyPollFlatKebab
 	}
 	if raw.UDPGWDebugFlat != nil {
 		cfg.UDPGW.Debug = *raw.UDPGWDebugFlat
@@ -391,6 +435,9 @@ type serverFlagTargets struct {
 	udpgwListen       *string
 	udpgwInternalHost *string
 	udpgwMaxClients   *int
+	udpgwMode         *string
+	udpgwInterface    *string
+	udpgwBusyPoll     *int
 	udpgwDebug        *bool
 }
 
@@ -478,6 +525,15 @@ func applyConfig(cfg *ServerConfig, visited map[string]bool, t serverFlagTargets
 	}
 	if !visited["udpgw-max-clients"] && t.udpgwMaxClients != nil {
 		*t.udpgwMaxClients = cfg.UDPGW.MaxClients
+	}
+	if !visited["udpgw-mode"] && t.udpgwMode != nil && cfg.UDPGW.Mode != "" {
+		*t.udpgwMode = cfg.UDPGW.Mode
+	}
+	if !visited["udpgw-interface"] && t.udpgwInterface != nil && cfg.UDPGW.Interface != "" {
+		*t.udpgwInterface = cfg.UDPGW.Interface
+	}
+	if !visited["udpgw-busy-poll"] && t.udpgwBusyPoll != nil && cfg.UDPGW.BusyPollUS > 0 {
+		*t.udpgwBusyPoll = cfg.UDPGW.BusyPollUS
 	}
 	if !visited["udpgw-debug"] && t.udpgwDebug != nil {
 		*t.udpgwDebug = cfg.UDPGW.Debug

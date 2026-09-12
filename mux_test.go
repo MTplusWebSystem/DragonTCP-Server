@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -743,6 +744,112 @@ func TestHTTPPayloadHandshakeAndMuxV2(t *testing.T) {
 	resp, err = wire.ReadMuxResponse(br)
 	if err != nil || resp.Status != wire.StatusOK || resp.RequestID != 704 {
 		t.Fatalf("close mismatch: resp=%+v err=%v", resp, err)
+	}
+}
+
+func TestMuxParallelWorkersIperf(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	cache := newDNSCache(time.Minute, 1024)
+	manager := newStreamManager(time.Minute, nil)
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				mc := newMuxServerConn(c, 0, false)
+				handleMuxConnection(mc, "", true, cache, 0, manager, 1024*1024, 2*1024*1024, 10*time.Millisecond, nil)
+			}(conn)
+		}
+	}()
+
+	const (
+		chunkSize = 16 * 1024
+		duration  = 100 * time.Millisecond
+	)
+	workers := calculateParallelWorkers(chunkSize)
+	if workers != 64 {
+		t.Fatalf("expected 64 workers, got %d", workers)
+	}
+
+	started := time.Now()
+	deadline := started.Add(duration)
+
+	var totalBytes atomic.Int64
+	var totalErrors atomic.Int64
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			c, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				totalErrors.Add(1)
+				return
+			}
+			defer c.Close()
+
+			var sid wire.SessionID
+			binary.BigEndian.PutUint64(sid[0:8], uint64(workerID+1))
+			reqID := uint32(workerID * 1000)
+
+			for time.Now().Before(deadline) {
+				_ = c.SetDeadline(time.Now().Add(time.Second))
+				// 1. Upload probe
+				reqID++
+				payloadUp := makeTestProbePayload(wire.ProbeIperfUpload, chunkSize, chunkSize, "")
+				if err := wire.WriteMuxRequest(c, wire.ModeProbe, sid, 0, reqID, payloadUp); err != nil {
+					totalErrors.Add(1)
+					return
+				}
+				resp, err := wire.ReadMuxResponse(c)
+				if err != nil || resp.Status != wire.StatusOK || resp.RequestID != reqID {
+					totalErrors.Add(1)
+					return
+				}
+				totalBytes.Add(int64(chunkSize))
+
+				// 2. Download probe
+				reqID++
+				payloadDw := makeTestProbePayload(wire.ProbeIperfDownload, chunkSize, 11, "")
+				if err := wire.WriteMuxRequest(c, wire.ModeProbe, sid, 0, reqID, payloadDw); err != nil {
+					totalErrors.Add(1)
+					return
+				}
+				burst := wire.ProbeBurstCount(chunkSize)
+				for b := 0; b < burst; b++ {
+					resp, err := wire.ReadMuxResponse(c)
+					if err != nil || resp.Status != wire.StatusData || resp.RequestID != reqID {
+						totalErrors.Add(1)
+						return
+					}
+					decoded := wire.DecodeMaskedResponse(resp.Status, resp.Body, sid, wire.ModeProbe, uint64(b))
+					if len(decoded) != chunkSize {
+						totalErrors.Add(1)
+						return
+					}
+					totalBytes.Add(int64(len(decoded)))
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	if totalErrors.Load() > 0 {
+		t.Fatalf("Mux v2 sustained parallel probe encountered %d errors across 64 workers", totalErrors.Load())
+	}
+	if totalBytes.Load() < int64(workers*chunkSize) {
+		t.Fatalf("expected total bytes >= %d, got %d", workers*chunkSize, totalBytes.Load())
 	}
 }
 
