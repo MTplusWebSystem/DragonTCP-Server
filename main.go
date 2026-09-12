@@ -533,6 +533,9 @@ func main() {
 		udpgwListen:       udpgwListen,
 		udpgwInternalHost: udpgwInternalHost,
 		udpgwMaxClients:   udpgwMaxClients,
+		udpgwMode:         udpgwMode,
+		udpgwInterface:    udpgwInterface,
+		udpgwBusyPoll:     udpgwBusyPoll,
 		udpgwDebug:        udpgwDebug,
 	}
 	if *adminAddr != "" {

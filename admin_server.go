@@ -39,6 +39,8 @@ type ServerStatusResponse struct {
 	Errors         uint64    `json:"errors"`
 	SSHEnabled     bool      `json:"ssh_enabled"`
 	UDPGWEnabled   bool      `json:"udpgw_enabled"`
+	UDPGWMode      string    `json:"udpgw_mode,omitempty"`
+	UDPGWInterface string    `json:"udpgw_interface,omitempty"`
 }
 
 type SystemMetricsResponse struct {
@@ -207,6 +209,18 @@ func (as *adminServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Errors:         errorsCount,
 		SSHEnabled:     sshEn,
 		UDPGWEnabled:   udpEn,
+		UDPGWMode: func() string {
+			if as.cfgTarget.udpgwMode != nil && *as.cfgTarget.udpgwMode != "" {
+				return *as.cfgTarget.udpgwMode
+			}
+			return "native"
+		}(),
+		UDPGWInterface: func() string {
+			if as.cfgTarget.udpgwInterface != nil && *as.cfgTarget.udpgwInterface != "" {
+				return *as.cfgTarget.udpgwInterface
+			}
+			return "auto"
+		}(),
 	}
 
 	writeJSON(w, http.StatusOK, resp)

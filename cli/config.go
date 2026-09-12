@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 )
 
@@ -20,6 +21,37 @@ const (
 	ConfigSectionDiagnostics
 )
 
+// calculateParallelWorkers calculates how many concurrent connections/workers are required
+// to achieve 1024 KB (1 Mbps equivalent) per round based on the calibrated safe chunkSize.
+// Formula: workers = ceil(1024 * 1024 / chunkSize), clamped to [1, 64].
+func calculateParallelWorkers(chunkSize int) int {
+	if chunkSize <= 0 {
+		return 1
+	}
+	targetBytes := 1024 * 1024 // 1024 KB = 1 Mbps per round
+	workers := (targetBytes + chunkSize - 1) / chunkSize
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 64 {
+		workers = 64
+	}
+	return workers
+}
+
+// NewConfigSectionKeyMap creates a smooth navigation keymap for Huh forms,
+// supporting Down/Up arrow keys as well as Enter and Tab for seamless terminal experience.
+func NewConfigSectionKeyMap() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+	km.Input.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"))
+	km.Input.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"))
+	km.Confirm.Next = key.NewBinding(key.WithKeys("enter", "tab", "down"))
+	km.Confirm.Prev = key.NewBinding(key.WithKeys("shift+tab", "up"))
+	km.Select.Next = key.NewBinding(key.WithKeys("enter", "tab"))
+	km.Select.Prev = key.NewBinding(key.WithKeys("shift+tab"))
+	return km
+}
+
 type ConfigFormVars struct {
 	// Network
 	Host       string
@@ -31,7 +63,7 @@ type ConfigFormVars struct {
 	MaxConnsStr  string
 	AllowPrivate bool
 
-	// Tuning
+	// Tuning & Workers
 	ChunkMaxStr      string
 	ChunkBufferedStr string
 	ChunkPollWait    string
@@ -54,6 +86,9 @@ type ConfigFormVars struct {
 	UDPGWListen        string
 	UDPGWInternalHost  string
 	UDPGWMaxClientsStr string
+	UDPGWMode          string // "native" (ABI Linux), "tun" (TUN device), "standard" (BadVPN)
+	UDPGWInterface     string // "auto", "eth0", etc.
+	UDPGWBusyPollUSStr string // SO_BUSY_POLL in µs (padrão: 50)
 	UDPGWDebug         bool
 
 	// Diagnostics
@@ -91,6 +126,18 @@ func (v *ConfigFormVars) LoadFrom(cfg *YAMLConfig) {
 	v.UDPGWListen = cfg.UDPGW.Listen
 	v.UDPGWInternalHost = cfg.UDPGW.InternalHost
 	v.UDPGWMaxClientsStr = strconv.Itoa(cfg.UDPGW.MaxClients)
+	v.UDPGWMode = cfg.UDPGW.Mode
+	if v.UDPGWMode == "" {
+		v.UDPGWMode = "native"
+	}
+	v.UDPGWInterface = cfg.UDPGW.Interface
+	if v.UDPGWInterface == "" {
+		v.UDPGWInterface = "auto"
+	}
+	v.UDPGWBusyPollUSStr = strconv.Itoa(cfg.UDPGW.BusyPollUS)
+	if cfg.UDPGW.BusyPollUS <= 0 && cfg.UDPGW.Mode != "standard" {
+		v.UDPGWBusyPollUSStr = "50"
+	}
 	v.UDPGWDebug = cfg.UDPGW.Debug
 
 	v.AdminAddr = cfg.AdminAddr
@@ -143,6 +190,11 @@ func (v *ConfigFormVars) ApplyTo(cfg *YAMLConfig) {
 	if mc, err := strconv.Atoi(strings.TrimSpace(v.UDPGWMaxClientsStr)); err == nil {
 		cfg.UDPGW.MaxClients = mc
 	}
+	cfg.UDPGW.Mode = strings.TrimSpace(v.UDPGWMode)
+	cfg.UDPGW.Interface = strings.TrimSpace(v.UDPGWInterface)
+	if bp, err := strconv.Atoi(strings.TrimSpace(v.UDPGWBusyPollUSStr)); err == nil {
+		cfg.UDPGW.BusyPollUS = bp
+	}
 	cfg.UDPGW.Debug = v.UDPGWDebug
 
 	cfg.AdminAddr = strings.TrimSpace(v.AdminAddr)
@@ -158,14 +210,28 @@ func renderConfigMenuView(cfg *YAMLConfig, width int) string {
 		TitleStyle.Render("CONFIGURAÇÃO (dragontcp.yaml)"),
 	}
 
+	workers := calculateParallelWorkers(cfg.ChunkMax)
+
 	if mode == ModeMobile {
+		udpgwShort := "Off"
+		if cfg.UDPGW.Enable {
+			switch cfg.UDPGW.Mode {
+			case "tun":
+				udpgwShort = "TUN"
+			case "standard":
+				udpgwShort = "Pad"
+			default:
+				udpgwShort = "ABI"
+			}
+		}
+
 		menuSection := []string{
 			"[1] Rede & Portas",
 			"[2] Segurança & Limites",
-			"[3] Tuning & Chunks",
+			fmt.Sprintf("[3] Tuning & Chunks (%d wrk)", workers),
 			"[4] Cache DNS",
 			"[5] Fake SSH Interno",
-			"[6] BadVPN UDPGW",
+			fmt.Sprintf("[6] UDPGW (%s)", udpgwShort),
 			"[7] Diagnósticos & Admin",
 			"",
 			"[8] Salvar no Arquivo",
@@ -181,9 +247,16 @@ func renderConfigMenuView(cfg *YAMLConfig, width int) string {
 	if !cfg.SSH.Enable {
 		sshStatus = "Desativado"
 	}
-	udpgwStatus := "Ativo (porta " + cfg.UDPGW.Listen + ")"
-	if !cfg.UDPGW.Enable {
-		udpgwStatus = "Desativado"
+	udpgwStatus := "Desativado"
+	if cfg.UDPGW.Enable {
+		modeName := "ABI Linux"
+		switch cfg.UDPGW.Mode {
+		case "tun":
+			modeName = "TUN"
+		case "standard":
+			modeName = "Padrão"
+		}
+		udpgwStatus = fmt.Sprintf("Ativo (%s | %s)", cfg.UDPGW.Listen, modeName)
 	}
 	tokenDisplay := "Público"
 	if cfg.Token != "" {
@@ -193,7 +266,7 @@ func renderConfigMenuView(cfg *YAMLConfig, width int) string {
 	menuSection := []string{
 		fmt.Sprintf("[1] %-24s Host: %s | Portas: %d / %d", "Rede & Portas", cfg.Host, cfg.Port, cfg.PortAlt),
 		fmt.Sprintf("[2] %-24s Max Conns: %d | Token: %s", "Segurança & Limites", cfg.MaxConnections, tokenDisplay),
-		fmt.Sprintf("[3] %-24s Chunks: %d B | Wait: %s", "Tuning & Chunks", cfg.ChunkMax, cfg.ChunkPollWait),
+		fmt.Sprintf("[3] %-24s Chunks: %d B | Workers: %d | Wait: %s", "Tuning & Chunks", cfg.ChunkMax, workers, cfg.ChunkPollWait),
 		fmt.Sprintf("[4] %-24s TTL: %s | Tamanho: %d", "Cache DNS", cfg.DNSCacheTTL, cfg.DNSCacheSize),
 		fmt.Sprintf("[5] %-24s %s", "Fake SSH Interno", sshStatus),
 		fmt.Sprintf("[6] %-24s %s", "BadVPN UDPGW", udpgwStatus),
@@ -253,14 +326,24 @@ func NewConfigSectionForm(sec ConfigSection, vars *ConfigFormVars, confirmed *bo
 		}
 
 	case ConfigSectionTuning:
+		currentChunk, _ := strconv.Atoi(strings.TrimSpace(vars.ChunkMaxStr))
+		if currentChunk <= 0 {
+			currentChunk = 1048576
+		}
+		workers := calculateParallelWorkers(currentChunk)
+		workersNote := fmt.Sprintf("Chunk de %d bytes resulta em %d workers paralelos (alvo 1024 KB / 1 Mbps).", currentChunk, workers)
+
 		fields = []huh.Field{
+			huh.NewNote().
+				Title("Escalonamento de Workers Paralelos (AWP)").
+				Description(workersNote),
 			huh.NewInput().
 				Title("Chunk Máximo (Bytes)").
-				Description("Tamanho máximo do payload adaptativo (ex: 1048576 = 1 MiB)").
+				Description("Tamanho máximo do payload adaptativo (ex: 1048576 = 1 worker, 16384 = 64 workers)").
 				Value(&vars.ChunkMaxStr),
 			huh.NewInput().
 				Title("Chunk Buffered (Blocos 64K)").
-				Description("Buffer de download por sessão (ex: 32 = ~2 MiB)").
+				Description("Buffer de download por sessão (ex: 32 = ~2 MiB, 64 = ~4 MiB)").
 				Value(&vars.ChunkBufferedStr),
 			huh.NewInput().
 				Title("Long-poll Wait Interval").
@@ -320,6 +403,23 @@ func NewConfigSectionForm(sec ConfigSection, vars *ConfigFormVars, confirmed *bo
 				Affirmative("Sim (habilitado)").
 				Negative("Não (desabilitado)").
 				Value(&vars.UDPGWEnable),
+			huh.NewSelect[string]().
+				Title("Modo de Descarga UDP").
+				Description("Selecione a engine de processamento e descarga de pacotes UDP").
+				Options(
+					huh.NewOption("Descarga ABI Linux (SO_BINDTODEVICE + SO_BUSY_POLL)", "native"),
+					huh.NewOption("Dispositivo TUN (/dev/net/tun)", "tun"),
+					huh.NewOption("UDPGW Padrão (BadVPN compatível / sem root)", "standard"),
+				).
+				Value(&vars.UDPGWMode),
+			huh.NewInput().
+				Title("Interface de Rede (NIC)").
+				Description("Placa física para SO_BINDTODEVICE (ex: auto, eth0, ens3, bond0)").
+				Value(&vars.UDPGWInterface),
+			huh.NewInput().
+				Title("SO_BUSY_POLL (µs)").
+				Description("Polling direto na fila da NIC (padrão: 50µs, 0 para desativar)").
+				Value(&vars.UDPGWBusyPollUSStr),
 			huh.NewInput().
 				Title("UDPGW Listen Address").
 				Description("Endereço de bind interno (ex: 127.0.0.1:7400)").
@@ -372,5 +472,5 @@ func NewConfigSectionForm(sec ConfigSection, vars *ConfigFormVars, confirmed *bo
 
 	return huh.NewForm(
 		huh.NewGroup(fields...),
-	).WithTheme(theme)
+	).WithTheme(theme).WithKeyMap(NewConfigSectionKeyMap())
 }

@@ -45,6 +45,8 @@ type ServerStatus struct {
 	Errors         uint64    `json:"errors"`
 	SSHEnabled     bool      `json:"ssh_enabled"`
 	UDPGWEnabled   bool      `json:"udpgw_enabled"`
+	UDPGWMode      string    `json:"udpgw_mode,omitempty"`
+	UDPGWInterface string    `json:"udpgw_interface,omitempty"`
 }
 
 type SystemMetrics struct {
@@ -421,6 +423,9 @@ type YAMLUDPGWConfig struct {
 	Listen       string `yaml:"listen"`
 	InternalHost string `yaml:"internal_host"`
 	MaxClients   int    `yaml:"max_clients"`
+	Mode         string `yaml:"mode"`
+	Interface    string `yaml:"interface"`
+	BusyPollUS   int    `yaml:"busy_poll_us"`
 	Debug        bool   `yaml:"debug"`
 }
 
@@ -477,6 +482,9 @@ func DefaultYAMLConfig() *YAMLConfig {
 			Listen:       "127.0.0.1:7400",
 			InternalHost: "dragontcp-udpgw.internal",
 			MaxClients:   10000,
+			Mode:         "native",
+			Interface:    "auto",
+			BusyPollUS:   50,
 			Debug:        false,
 		},
 	}

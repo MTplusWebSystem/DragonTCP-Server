@@ -267,4 +267,32 @@ func TestConfigSectionEditing(t *testing.T) {
 	if !reloaded.UDPGW.Enable || reloaded.UDPGW.MaxClients != 10000 {
 		t.Fatalf("UDPGW section mismatch: %+v", reloaded.UDPGW)
 	}
+
+	// 5. Test Section 6: BadVPN UDPGW Form with native/tun/standard mode
+	app.state = StateConfigMenu
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'6'}})
+	app = m.(*AppModel)
+	if app.state != StateConfigSectionEdit || app.activeForm == nil {
+		t.Fatalf("expected StateConfigSectionEdit for UDPGW, got %v", app.state)
+	}
+	app.formConfigVars.UDPGWMode = "tun"
+	app.formConfigVars.UDPGWInterface = "eth1"
+	app.formConfigVars.UDPGWBusyPollUSStr = "100"
+	app.formConfirmed = true
+	app.handleFormCompletion()
+
+	if app.yamlConfig.UDPGW.Mode != "tun" || app.yamlConfig.UDPGW.Interface != "eth1" || app.yamlConfig.UDPGW.BusyPollUS != 100 {
+		t.Fatalf("expected UDPGW mode tun / eth1 / 100, got %+v", app.yamlConfig.UDPGW)
+	}
+
+	// 6. Test Parallel Workers calculation formula
+	if w := calculateParallelWorkers(1048576); w != 1 {
+		t.Fatalf("expected 1 worker for 1048576 chunk, got %d", w)
+	}
+	if w := calculateParallelWorkers(16384); w != 64 {
+		t.Fatalf("expected 64 workers for 16384 chunk, got %d", w)
+	}
+	if w := calculateParallelWorkers(32768); w != 32 {
+		t.Fatalf("expected 32 workers for 32768 chunk, got %d", w)
+	}
 }

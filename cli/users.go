@@ -206,7 +206,7 @@ func NewCreateUserForm(username, password, daysStr, maxConnsStr *string) *huh.Fo
 					return nil
 				}),
 		),
-	).WithTheme(huh.ThemeCharm())
+	).WithTheme(huh.ThemeCharm()).WithKeyMap(NewConfigSectionKeyMap())
 }
 
 // NewDeleteUserConfirmForm cria o formulário para confirmar a remoção de usuário
@@ -220,5 +220,5 @@ func NewDeleteUserConfirmForm(username string, confirmed *bool) *huh.Form {
 				Negative("Cancelar").
 				Value(confirmed),
 		),
-	).WithTheme(huh.ThemeCharm())
+	).WithTheme(huh.ThemeCharm()).WithKeyMap(NewConfigSectionKeyMap())
 }

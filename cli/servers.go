@@ -108,6 +108,18 @@ func renderMainMenuBox(status ServerStatus, metrics SystemMetrics, width int) st
 	udpgwInfo := "Ativo (127.0.0.1:7400)"
 	if !status.UDPGWEnabled {
 		udpgwInfo = "Desativado"
+	} else {
+		modeDesc := "ABI Linux"
+		if status.UDPGWMode == "tun" {
+			modeDesc = "TUN"
+		} else if status.UDPGWMode == "standard" {
+			modeDesc = "Padrão"
+		}
+		ifaceDesc := ""
+		if status.UDPGWInterface != "" && status.UDPGWInterface != "auto" {
+			ifaceDesc = " • " + status.UDPGWInterface
+		}
+		udpgwInfo = fmt.Sprintf("Ativo (%s%s)", modeDesc, ifaceDesc)
 	}
 
 	rightNocContent := []string{
@@ -116,10 +128,11 @@ func renderMainMenuBox(status ServerStatus, metrics SystemMetrics, width int) st
 		fmt.Sprintf("Frames:    Push: %d | Pull: %d | Data: %d", status.PushRecords, status.PullRequests, status.DataRecords),
 		"",
 		"Serviços Integrados:",
-		fmt.Sprintf("• Porta DNS Primária:  %d/UDP+TCP", status.Port),
+		fmt.Sprintf("• Porta DNS Primária:    %d/UDP+TCP", status.Port),
 		fmt.Sprintf("• Porta HTTP Secundária: %d/TCP", status.PortAlt),
-		fmt.Sprintf("• Túnel Fake SSH:      %s", sshInfo),
-		fmt.Sprintf("• BadVPN UDPGW:        %s", udpgwInfo),
+		fmt.Sprintf("• Túnel Fake SSH:        %s", sshInfo),
+		fmt.Sprintf("• BadVPN UDPGW:          %s", udpgwInfo),
+		"• Workers Paralelos:     Adaptativo (1..64 workers • 1 Mbps AWP)",
 		"",
 		fmt.Sprintf("Hardware:  %d Cores • %d Goroutines • GC Runs: %d", metrics.NumCPU, metrics.NumGoroutine, metrics.NumGC),
 		"",
@@ -168,7 +181,19 @@ func renderServerStatusBox(status ServerStatus, width int) string {
 			return "Público"
 		}()),
 		fmt.Sprintf("%-12s %t", "SSH", status.SSHEnabled),
-		fmt.Sprintf("%-12s %t", "UDPGW", status.UDPGWEnabled),
+		fmt.Sprintf("%-12s %s", "UDPGW", func() string {
+			if !status.UDPGWEnabled {
+				return "Desativado"
+			}
+			mode := "ABI Linux"
+			if status.UDPGWMode == "tun" {
+				mode = "TUN"
+			} else if status.UDPGWMode == "standard" {
+				mode = "Padrão"
+			}
+			return fmt.Sprintf("Ativo (%s)", mode)
+		}()),
+		fmt.Sprintf("%-12s %s", "Workers", "AWP Adaptativo (1..64)"),
 		"",
 		"[0] Voltar",
 	}
