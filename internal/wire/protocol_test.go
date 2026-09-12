@@ -111,3 +111,91 @@ func TestProbeBurstCountSinglePoller(t *testing.T) {
 		}
 	}
 }
+
+func TestMuxRequestResponseRoundTrip(t *testing.T) {
+	var sid SessionID
+	for i := range sid {
+		sid[i] = byte(i + 0x11)
+	}
+
+	for _, clear := range []bool{false, true} {
+		for _, mask := range []byte{0x00, 0x48, 0x90, 0xf0} {
+			payload := []byte("hello multiplexed v2 dragon tcp")
+			var buf bytes.Buffer
+
+			// Test Request Write & Read
+			err := WriteMuxRequestProfileEncoding(&buf, ModeOpen, sid, 12345, 999, payload, mask, clear)
+			if err != nil {
+				t.Fatalf("clear=%t mask=%02x WriteMuxRequest error: %v", clear, mask, err)
+			}
+			if buf.Len() != MuxRequestHeaderSize+len(payload) {
+				t.Fatalf("clear=%t mask=%02x expected size %d, got %d", clear, mask, MuxRequestHeaderSize+len(payload), buf.Len())
+			}
+
+			req, err := ReadMuxRequestProfileEncoding(&buf, mask, clear)
+			if err != nil {
+				t.Fatalf("clear=%t mask=%02x ReadMuxRequest error: %v", clear, mask, err)
+			}
+			if req.Mode != ModeOpen {
+				t.Fatalf("expected ModeOpen, got %d", req.Mode)
+			}
+			if req.Session != sid {
+				t.Fatalf("session ID mismatch")
+			}
+			if req.Seq != 12345 {
+				t.Fatalf("expected seq 12345, got %d", req.Seq)
+			}
+			if req.RequestID != 999 {
+				t.Fatalf("expected request_id 999, got %d", req.RequestID)
+			}
+			if !bytes.Equal(req.Payload, payload) {
+				t.Fatalf("expected payload %q, got %q", payload, req.Payload)
+			}
+
+			// Test Response Write & Read
+			var respBuf bytes.Buffer
+			respBody := []byte("status ok response body")
+			err = WriteMuxResponseProfile(&respBuf, StatusOK, 999, respBody, mask)
+			if err != nil {
+				t.Fatalf("WriteMuxResponseProfile error: %v", err)
+			}
+			if respBuf.Len() != MuxResponseHeaderSize+len(respBody) {
+				t.Fatalf("expected response size %d, got %d", MuxResponseHeaderSize+len(respBody), respBuf.Len())
+			}
+
+			resp, err := ReadMuxResponseProfile(&respBuf, mask)
+			if err != nil {
+				t.Fatalf("ReadMuxResponseProfile error: %v", err)
+			}
+			if resp.Status != StatusOK {
+				t.Fatalf("expected StatusOK, got %d", resp.Status)
+			}
+			if resp.RequestID != 999 {
+				t.Fatalf("expected request_id 999, got %d", resp.RequestID)
+			}
+			if !bytes.Equal(resp.Body, respBody) {
+				t.Fatalf("expected body %q, got %q", respBody, resp.Body)
+			}
+
+			// Test Masked Response Write & Read
+			var maskedRespBuf bytes.Buffer
+			err = WriteMaskedMuxResponseProfileEncoding(&maskedRespBuf, StatusData, 999, respBody, sid, ModeDownload, 100, mask, clear)
+			if err != nil {
+				t.Fatalf("WriteMaskedMuxResponseProfileEncoding error: %v", err)
+			}
+			respMasked, err := ReadMuxResponseProfile(&maskedRespBuf, mask)
+			if err != nil {
+				t.Fatalf("ReadMuxResponseProfile masked error: %v", err)
+			}
+			if respMasked.Status != StatusData || respMasked.RequestID != 999 {
+				t.Fatalf("unexpected masked status or reqID: %+v", respMasked)
+			}
+			if !clear {
+				DecodeMaskedResponse(respMasked.Status, respMasked.Body, sid, ModeDownload, 100)
+			}
+			if !bytes.Equal(respMasked.Body, respBody) {
+				t.Fatalf("decoded masked body mismatch: expected %q, got %q", respBody, respMasked.Body)
+			}
+		}
+	}
+}

@@ -25,6 +25,7 @@ type Profile struct {
 	HeaderMask byte
 	XOR        bool
 	Clear      bool
+	MuxV2      bool
 }
 
 func (p Profile) String() string {
@@ -35,7 +36,11 @@ func (p Profile) String() string {
 	if p.Clear {
 		encoding = "clear"
 	}
-	return fmt.Sprintf("cover-%04x/pad-%d/%s", p.ID, p.Padding, encoding)
+	mux := ""
+	if p.MuxV2 {
+		mux = "+mux"
+	}
+	return fmt.Sprintf("cover-%04x/pad-%d/%s%s", p.ID, p.Padding, encoding, mux)
 }
 
 func key(id uint16) [32]byte {
@@ -66,6 +71,9 @@ func EncodePreface(p Profile) ([PrefaceSize]byte, error) {
 	if p.Clear {
 		plain[4] |= 2
 	}
+	if p.MuxV2 {
+		plain[4] |= 4
+	}
 	plain[5] = p.HeaderMask
 	binary.BigEndian.PutUint16(plain[6:8], p.Padding)
 	plain[8] = plain[4] ^ plain[5] ^ 0xa5
@@ -86,7 +94,7 @@ func DecodePreface(in [PrefaceSize]byte) (p Profile, ok bool) {
 	for i := range plain {
 		plain[i] = in[2+i] ^ k[i]
 	}
-	if string(plain[0:4]) != "DTC3" || plain[4]&^byte(3) != 0 {
+	if string(plain[0:4]) != "DTC3" || plain[4]&^byte(7) != 0 {
 		return Profile{}, false
 	}
 	if plain[8] != plain[4]^plain[5]^0xa5 || plain[9] != plain[6]^plain[7]^0x5a {
@@ -103,6 +111,7 @@ func DecodePreface(in [PrefaceSize]byte) (p Profile, ok bool) {
 		HeaderMask: plain[5],
 		XOR:        plain[4]&1 != 0,
 		Clear:      plain[4]&2 != 0,
+		MuxV2:      plain[4]&4 != 0,
 	}, true
 }
 

@@ -239,6 +239,24 @@ func handle(
 			coverID = profile.ID
 		}
 	}
+	muxV2 := false
+	if profiled, ok := conn.(interface{ MuxV2() bool }); ok {
+		muxV2 = profiled.MuxV2()
+	}
+
+	if muxV2 {
+		if debug != nil && debug.enabled {
+			if covered {
+				debug.logf("WIRE peer=%v mode=mux_v2 header_mask=%02x clear_payload=%t cover_id=%04x", conn.RemoteAddr(), headerMask, clearPayload, coverID)
+			} else {
+				debug.logf("WIRE peer=%v mode=mux_v2 header_mask=%02x clear_payload=%t cover_id=direct", conn.RemoteAddr(), headerMask, clearPayload)
+			}
+		}
+		mc := newMuxServerConn(conn, headerMask, clearPayload)
+		handleMuxConnection(mc, token, allowPrivate, cache, tcpBuffer, manager, chunkMax, bufferBytes, chunkPollWait, debug)
+		return
+	}
+
 	if debug != nil && debug.enabled {
 		if covered {
 			debug.logf("WIRE peer=%v mode=binary header_mask=%02x clear_payload=%t cover_id=%04x", conn.RemoteAddr(), headerMask, clearPayload, coverID)
